@@ -353,3 +353,7 @@ def _validate(inv: InvoiceData) -> list[str]:
         pass
 
     return warnings
+  
+def get_available_models() -> list[str]:
+    """Vraća listu dostupnih OpenAI modela."""
+    return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
