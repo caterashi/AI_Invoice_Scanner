@@ -276,7 +276,7 @@ def save_invoices(
     if added > 0:
         wb.save(str(path))
 
-    return added
+    return added, []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
