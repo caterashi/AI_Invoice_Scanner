@@ -5,6 +5,12 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
+if "openai_api_key" not in st.session_state:
+    st.session_state["openai_api_key"] = (
+        st.secrets.get("OPENAI_API_KEY", "")
+        or os.getenv("OPENAI_API_KEY", "")
+    )
+    
 load_dotenv()
 
 st.set_page_config(
