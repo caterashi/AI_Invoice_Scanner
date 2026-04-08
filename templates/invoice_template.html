@@ -1,0 +1,71 @@
+<!DOCTYPE html><html lang="bs"><head><meta charset="UTF-8">
+<style>
+* { box-sizing:border-box;margin:0;padding:0 }
+body { font-family:Arial,sans-serif;font-size:12px;color:#28251d;background:#fff }
+.page { padding:40px 48px;max-width:794px;margin:0 auto }
+.header { display:flex;justify-content:space-between;align-items:flex-start;
+          margin-bottom:32px;border-bottom:2px solid #01696f;padding-bottom:20px }
+.logo h1 { font-size:22px;font-weight:800;color:#01696f }
+.logo p  { font-size:11px;color:#7a7974;margin-top:4px }
+.title   { text-align:right }
+.title h2 { font-size:18px;font-weight:700 }
+.title .num  { font-size:13px;color:#01696f;font-weight:600;margin-top:4px }
+.title .date { font-size:11px;color:#7a7974;margin-top:2px }
+.parties { display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:28px }
+.box { background:#f7f6f2;border-radius:8px;padding:16px }
+.box h3 { font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#7a7974;margin-bottom:8px }
+.box .name { font-weight:700;font-size:13px }
+.box .ids  { font-size:10px;color:#7a7974;margin-top:6px }
+table { width:100%;border-collapse:collapse;margin-bottom:24px }
+thead th { background:#01696f;color:#fff;font-size:10px;font-weight:700;
+           text-transform:uppercase;padding:8px 10px;text-align:left }
+tbody tr:nth-child(even) { background:#f7f6f2 }
+tbody td { padding:8px 10px;font-size:11px;border-bottom:1px solid #e8e6e1 }
+.totals { margin-left:auto;width:240px }
+.totals table { border:1px solid #dcd9d5;border-radius:8px;overflow:hidden }
+.totals td { padding:7px 12px;font-size:12px }
+.totals .total td { background:#01696f;color:#fff;font-weight:700;font-size:13px }
+.footer { margin-top:40px;padding-top:16px;border-top:1px solid #dcd9d5;
+          font-size:10px;color:#7a7974;text-align:center }
+</style></head>
+<body><div class="page">
+  <div class="header">
+    <div class="logo"><h1>🧾 Faktura</h1><p>Skener Faktura AI — Generirani dokument</p></div>
+    <div class="title">
+      <h2>RAČUN / FAKTURA</h2>
+      <div class="num">Br. {{ invoice.BROJFAKT or '—' }}</div>
+      <div class="date">Datum: {{ invoice.DATUMF or '—' }}</div>
+      {% if invoice.DATUMPF %}<div class="date">Datum prijema: {{ invoice.DATUMPF }}</div>{% endif %}
+    </div>
+  </div>
+  <div class="parties">
+    <div class="box">
+      <h3>Dobavljač (Izdavač)</h3>
+      <p class="name">{{ invoice.NAZIVPP or '—' }}</p>
+      <p>{{ invoice.SJEDISTEPP or '' }}</p>
+      <div class="ids">
+        {% if invoice.IDPDVPP %}JIB: {{ invoice.IDPDVPP }}{% endif %}
+        {% if invoice.JIBPUPP %} | PDV: {{ invoice.JIBPUPP }}{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <h3>Napomena</h3>
+      <p style="font-size:11px;color:#7a7974">Podaci automatski prepoznati AI-om.<br>Preporučujemo provjeru s originalnim dokumentom.</p>
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>Opis</th><th style="text-align:right">Bez PDV</th><th style="text-align:right">PDV</th><th style="text-align:right">S PDV</th></tr></thead>
+    <tbody><tr>
+      <td>Faktura br. {{ invoice.BROJFAKT or '—' }} od {{ invoice.DATUMF or '—' }}</td>
+      <td style="text-align:right">{{ invoice.IZNBEZPDV or '—' }} KM</td>
+      <td style="text-align:right">{{ invoice.IZNPDV or '—' }} KM</td>
+      <td style="text-align:right"><b>{{ invoice.IZNSAPDV or '—' }} KM</b></td>
+    </tr></tbody>
+  </table>
+  <div class="totals"><table>
+    <tr><td>Iznos bez PDV</td><td style="text-align:right">{{ invoice.IZNBEZPDV or '—' }} KM</td></tr>
+    <tr><td>PDV</td><td style="text-align:right">{{ invoice.IZNPDV or '—' }} KM</td></tr>
+    <tr class="total"><td>UKUPNO</td><td style="text-align:right">{{ invoice.IZNSAPDV or '—' }} KM</td></tr>
+  </table></div>
+  <div class="footer">Generirano automatski — Skener Faktura AI | {{ generated_date }}</div>
+</div></body></html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="bs">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 18mm 15mm 18mm 15mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif;
+         font-size: 10pt; color: #1a1a1a; }
+
+  .header { display: flex; justify-content: space-between;
+            align-items: flex-start; margin-bottom: 22px;
+            border-bottom: 2px solid #1F3864; padding-bottom: 14px; }
+  .supplier-name { font-size: 15pt; font-weight: bold; color: #1F3864; }
+  .supplier-info { font-size: 9pt; color: #444; margin-top: 4px; line-height: 1.6; }
+  .invoice-label { font-size: 22pt; font-weight: bold; color: #1F3864;
+                   text-align: right; line-height: 1.1; }
+  .invoice-meta  { text-align: right; font-size: 9pt; color: #555; margin-top: 4px;
+                   line-height: 1.7; }
+
+  .section-title { font-size: 9pt; font-weight: bold; text-transform: uppercase;
+                   letter-spacing: 0.06em; color: #2E75B6;
+                   border-bottom: 1px solid #BDD7EE; padding-bottom: 3px;
+                   margin-bottom: 8px; }
+
+  table.data { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  table.data th { background: #1F3864; color: #fff; font-size: 9pt;
+                  padding: 6px 8px; text-align: left; font-weight: bold; }
+  table.data td { padding: 5px 8px; font-size: 9.5pt; vertical-align: top;
+                  border-bottom: 1px solid #e0e9f5; }
+  table.data tr:nth-child(even) td { background: #EBF2FB; }
+
+  .amounts-box { width: 260px; margin-left: auto; border: 1px solid #BDD7EE;
+                 border-radius: 4px; overflow: hidden; }
+  .amounts-box table { width: 100%; border-collapse: collapse; }
+  .amounts-box td { padding: 5px 10px; font-size: 10pt; }
+  .amounts-box .label { color: #555; }
+  .amounts-box .value { text-align: right; font-weight: 500; }
+  .amounts-box .total-row td { background: #1F3864; color: #fff;
+                                font-weight: bold; font-size: 11pt; }
+  .amounts-box tr:not(.total-row) { border-bottom: 1px solid #D9E8F5; }
+
+  .warn-box { background: #FFF3CD; border: 1px solid #FFCA2C;
+              border-radius: 4px; padding: 8px 12px; margin-top: 14px;
+              font-size: 8.5pt; color: #7A5C00; }
+  .err-box  { background: #FDECEA; border: 1px solid #F5C6CB;
+              border-radius: 4px; padding: 8px 12px; margin-top: 14px;
+              font-size: 8.5pt; color: #721c24; }
+  .warn-box ul, .err-box ul { margin-left: 14px; margin-top: 4px; }
+
+  .footer { margin-top: 24px; border-top: 1px solid #BDD7EE;
+            padding-top: 8px; font-size: 8pt; color: #888;
+            display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<!-- ─── ZAGLAVLJE ──────────────────────────────────────────────────────────── -->
+<div class="header">
+  <div>
+    <div class="supplier-name">{{ invoice.NAZIVPP or "—" }}</div>
+    <div class="supplier-info">
+      {{ invoice.SJEDISTEPP or "" }}<br>
+      {% if invoice.IDPDVPP %}JIB: {{ invoice.IDPDVPP }}{% endif %}
+      {% if invoice.JIBPUPP %} &nbsp;|&nbsp; PDV: {{ invoice.JIBPUPP }}{% endif %}
+    </div>
+  </div>
+  <div>
+    <div class="invoice-label">FAKTURA</div>
+    <div class="invoice-meta">
+      Broj: <strong>{{ invoice.BROJFAKT or "—" }}</strong><br>
+      Datum: {{ invoice.DATUMF or "—" }}<br>
+      {% if invoice.DATUMPF %}Datum prijema: {{ invoice.DATUMPF }}{% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ─── DETALJI ────────────────────────────────────────────────────────────── -->
+<div class="section-title">Podaci o dobavljaču</div>
+<table class="data">
+  <thead>
+    <tr>
+      <th style="width:30%">Polje</th>
+      <th>Vrijednost</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for label, value in details %}
+    <tr>
+      <td>{{ label }}</td>
+      <td>{{ value if value else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<!-- ─── IZNOSI ─────────────────────────────────────────────────────────────── -->
+<div class="amounts-box">
+  <table>
+    <tr>
+      <td class="label">Iznos bez PDV-a</td>
+      <td class="value">{{ invoice.IZNBEZPDV or "—" }} KM</td>
+    </tr>
+    <tr>
+      <td class="label">PDV iznos</td>
+      <td class="value">{{ invoice.IZNPDV or "—" }} KM</td>
+    </tr>
+    <tr class="total-row">
+      <td>UKUPNO ZA UPLATU</td>
+      <td style="text-align:right">{{ invoice.IZNSAPDV or "—" }} KM</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ─── UPOZORENJA / GREŠKE ───────────────────────────────────────────────── -->
+{% if warnings %}
+<div class="warn-box">
+  <strong>⚠ Upozorenja (provjeri ručno):</strong>
+  <ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if errors %}
+<div class="err-box">
+  <strong>✗ Greške validacije:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<!-- ─── PODNOŽJE ───────────────────────────────────────────────────────────── -->
+<div class="footer">
+  <span>Generisano automatski — AI ekstrakcija fakture</span>
+  <span>{{ generated_at }}</span>
+</div>
+
+</body>
+</html>
