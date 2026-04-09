@@ -9,210 +9,238 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 st.set_page_config(page_title="Debug", layout="wide")
-st.title("🔧 Debug — PyMuPDF + AI Extractor")
+st.title("🔧 Debug — PDF čitanje + GPT")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KORAK 1 — Provjera instaliranih biblioteka
+# 1 — Biblioteke
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.header("1️⃣ Biblioteke")
 
-col1, col2, col3 = st.columns(3)
-
-with col1:
+c1, c2, c3 = st.columns(3)
+with c1:
     try:
         import fitz
-        st.success(f"✅ PyMuPDF\n`{fitz.__version__}`")
+        st.success(f"✅ PyMuPDF `{fitz.__version__}`")
     except ImportError:
-        st.error("❌ PyMuPDF\n`pip install PyMuPDF`")
+        st.error("❌ PyMuPDF  →  `pip install PyMuPDF`")
 
-with col2:
+with c2:
     try:
         import pdfplumber
-        st.success(f"✅ pdfplumber\n`{pdfplumber.__version__}`")
+        st.success(f"✅ pdfplumber `{pdfplumber.__version__}`")
     except ImportError:
-        st.warning("⚠️ pdfplumber\n(fallback, nije kritičan)")
+        st.warning("⚠️ pdfplumber nije instaliran")
 
-with col3:
+with c3:
     try:
         from pdf2image import convert_from_bytes
         import subprocess
-        r = subprocess.run(["pdftoppm", "-v"], capture_output=True)
+        subprocess.run(["pdftoppm", "-v"], capture_output=True, check=True)
         st.success("✅ pdf2image + poppler")
     except ImportError:
-        st.error("❌ pdf2image nije instaliran")
-    except FileNotFoundError:
-        st.error("❌ poppler nije instaliran")
+        st.error("❌ pdf2image  →  `pip install pdf2image`")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        st.error(
+            "❌ **poppler nije instaliran**\n\n"
+            "Mac: `brew install poppler`\n"
+            "Ubuntu: `sudo apt-get install poppler-utils`\n"
+            "Streamlit Cloud: dodaj `poppler-utils` u `packages.txt`"
+        )
 
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KORAK 2 — Upload i provjera PDF-a
+# 2 — PDF analiza
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.header("2️⃣ Provjera PDF-a")
+st.header("2️⃣ PDF analiza")
 
 uploaded = st.file_uploader("Uploaduj PDF", type=["pdf"])
 
-if uploaded:
-    pdf_bytes = uploaded.read()
-    st.caption(f"Veličina fajla: {len(pdf_bytes) / 1024:.1f} KB")
+if not uploaded:
+    st.stop()
 
-    # ── A) PyMuPDF ──────────────────────────────────────────────────────────
-    st.subheader("A) PyMuPDF (fitz)")
+pdf_bytes = uploaded.read()
+st.caption(f"Fajl: `{uploaded.name}` | Veličina: `{len(pdf_bytes)/1024:.1f} KB`")
+
+# ── PyMuPDF — svi modovi ─────────────────────────────────────────────────────
+st.subheader("PyMuPDF — svi modovi ekstrakcije")
+
+try:
+    import fitz
+
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        st.caption(f"Broj stranica: {doc.page_count}")
+
+        for mode in ("text", "blocks", "html", "rawdict"):
+            total_chars = 0
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc2:
+                for page in doc2:
+                    raw = page.get_text(mode)
+                    if isinstance(raw, list):
+                        raw = " ".join(
+                            b[4] for b in raw
+                            if isinstance(b, tuple) and len(b) > 4
+                        )
+                    elif isinstance(raw, dict):
+                        raw = str(raw)
+                    total_chars += len(re.sub(r"\s+", "", raw or ""))
+
+            icon = "✅" if total_chars >= 100 else "❌"
+            st.write(f"{icon} Mod `{mode}`: **{total_chars}** znakova bez razmaka")
+
+except ImportError:
+    st.error("PyMuPDF nije instaliran")
+except Exception as e:
+    st.error(f"PyMuPDF greška: `{e}`")
+
+# ── pdfplumber ────────────────────────────────────────────────────────────────
+st.subheader("pdfplumber")
+try:
+    import pdfplumber
+    total_pl = 0
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+            total_pl += len(re.sub(r"\s+", "", t))
+    icon = "✅" if total_pl >= 100 else "❌"
+    st.write(f"{icon} pdfplumber: **{total_pl}** znakova bez razmaka")
+except ImportError:
+    st.warning("pdfplumber nije instaliran")
+except Exception as e:
+    st.error(f"pdfplumber greška: `{e}`")
+
+# ── Zaključak ─────────────────────────────────────────────────────────────────
+st.subheader("Zaključak — koji mod će se koristiti")
+
+from ai_extractor import _extract_text, _is_text_pdf
+extracted = _extract_text(pdf_bytes)
+clean_len = len(re.sub(r"\s+", "", extracted))
+
+if clean_len >= 100:
+    st.success(
+        f"✅ **TEXT mod** — {clean_len} znakova izvučeno\n\n"
+        "Tekst se šalje direktno GPT-4o."
+    )
+    with st.expander("Prikaži izvučeni tekst"):
+        st.text(extracted[:5000] + ("..." if len(extracted) > 5000 else ""))
+else:
+    st.warning(
+        f"⚠️ **VISION mod** — tekstualna ekstrakcija dala je samo {clean_len} znakova\n\n"
+        "PDF će se konvertovati u slike i poslati GPT-4o Vision."
+    )
+
+    # Proba konverziju u sliku
+    st.subheader("Test pdf2image konverzije")
     try:
-        import fitz
-
-        parts = []
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            st.caption(f"Stranica(e): {doc.page_count}")
-            for i, page in enumerate(doc):
-                t = page.get_text("text")
-                clean = t.strip() if t else ""
-                if clean:
-                    parts.append(clean)
-                    st.success(f"Stranica {i+1}: ✅ {len(clean)} znakova")
-                    with st.expander(f"Tekst stranice {i+1}"):
-                        st.text(clean[:3000] + ("..." if len(clean) > 3000 else ""))
-                else:
-                    st.warning(f"Stranica {i+1}: ⚠️ nema teksta")
-
-        full = "\n\n".join(parts)
-        clean_len = len(re.sub(r"\s+", "", full))
-
-        if clean_len >= 100:
-            st.success(f"✅ **Tekstualni PDF** — {clean_len} znakova → TEXT mod")
-        else:
-            st.error(f"❌ Slikovni PDF — {clean_len} znakova → VISION mod")
-
-    except ImportError:
-        st.error("PyMuPDF nije instaliran — `pip install PyMuPDF`")
+        from pdf2image import convert_from_bytes
+        with st.spinner("Konvertujem..."):
+            pages = convert_from_bytes(pdf_bytes, dpi=150)
+        st.success(f"✅ Konverzija uspješna — {len(pages)} slika")
+        st.image(pages[0], caption="Stranica 1 (preview)", width=400)
+    except FileNotFoundError:
+        st.error(
+            "❌ **poppler nije instaliran** — Vision mod ne može raditi!\n\n"
+            "Mac: `brew install poppler`\n"
+            "Ubuntu: `sudo apt-get install poppler-utils`\n"
+            "Streamlit Cloud: `poppler-utils` u `packages.txt`"
+        )
     except Exception as e:
-        st.error(f"PyMuPDF greška: `{e}`")
+        st.error(f"pdf2image greška: `{e}`")
 
-    st.markdown("---")
+st.divider()
 
-    # ── B) pdfplumber ────────────────────────────────────────────────────────
-    st.subheader("B) pdfplumber (fallback)")
-    try:
-        import pdfplumber
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 — GPT ekstrakcija
+# ─────────────────────────────────────────────────────────────────────────────
 
-        parts_pl = []
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages):
-                t = page.extract_text(x_tolerance=2, y_tolerance=2)
-                if t and t.strip():
-                    parts_pl.append(t)
-                    st.success(f"Stranica {i+1}: ✅ {len(t)} znakova")
-                else:
-                    st.warning(f"Stranica {i+1}: ⚠️ nema teksta")
+st.header("3️⃣ GPT ekstrakcija")
 
-        clean_pl = len(re.sub(r"\s+", "", "".join(parts_pl)))
-        if clean_pl >= 100:
-            st.success(f"✅ pdfplumber čita: {clean_pl} znakova")
-        else:
-            st.warning(f"pdfplumber: {clean_pl} znakova (ispod praga)")
+api_key = (
+    st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
+) or os.getenv("OPENAI_API_KEY", "")
 
-    except ImportError:
-        st.warning("pdfplumber nije instaliran")
-    except Exception as e:
-        st.error(f"pdfplumber greška: `{e}`")
+if not api_key:
+    st.error("❌ OPENAI_API_KEY nije postavljen")
+    st.stop()
 
-    st.divider()
+st.success(f"✅ API ključ: `{api_key[:8]}...{api_key[-4:]}`")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # KORAK 3 — Kompletan GPT poziv
-    # ─────────────────────────────────────────────────────────────────────────
+if st.button("🚀 Pokreni ekstrakciju", type="primary"):
+    from ai_extractor import (
+        _extract_text, _is_text_pdf,
+        _pdf_to_b64_images, _combine_images,
+        _SYSTEM_PROMPT,
+    )
+    import json
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
 
-    st.header("3️⃣ GPT ekstrakcija")
+    text    = _extract_text(pdf_bytes)
+    is_text = _is_text_pdf(text)
+    st.info(f"Mod: **{'TEXT' if is_text else 'VISION'}**")
 
-    api_key = (
-        st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
-    ) or os.getenv("OPENAI_API_KEY", "")
-
-    if not api_key:
-        st.error("❌ API ključ nije postavljen — provjeri .env ili st.secrets")
+    if is_text:
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": (
+                f"Fajl: {uploaded.name}\n\n"
+                "Pronađi i izvuci SVE dokumente iz teksta ispod.\n\n"
+                f"TEKST DOKUMENTA:\n{text}"
+            )},
+        ]
     else:
-        st.success(f"✅ API ključ: `{api_key[:8]}...{api_key[-4:]}`")
+        try:
+            b64_pages = _pdf_to_b64_images(pdf_bytes)
+            b64       = _combine_images(b64_pages) if len(b64_pages) > 1 else b64_pages[0]
+            st.caption(f"Stranica(e) konvertovano: {len(b64_pages)}")
+        except Exception as e:
+            st.error(f"❌ Konverzija u sliku nije uspjela: `{e}`")
+            st.stop()
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                    "detail": "high",
+                }},
+                {"type": "text", "text": (
+                    f"Fajl: {uploaded.name}\n"
+                    "Pronađi i izvuci SVE dokumente s ove slike."
+                )},
+            ]},
+        ]
 
-        if st.button("🚀 Pokreni ekstrakciju", type="primary"):
-            from ai_extractor import (
-                _extract_text, _is_text_pdf,
-                _pdf_to_b64_images, _combine_images,
-                _SYSTEM_PROMPT,
+    try:
+        with st.spinner("Čekam GPT..."):
+            resp = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=4096,
+                temperature=0,
+                messages=messages,
             )
-            import json
-            from openai import OpenAI
+        raw = resp.choices[0].message.content.strip()
 
-            client = OpenAI(api_key=api_key)
+        st.caption(
+            f"Model: `{resp.model}` | "
+            f"Prompt tokeni: `{resp.usage.prompt_tokens}` | "
+            f"Output tokeni: `{resp.usage.completion_tokens}`"
+        )
 
-            # Tekst ekstrakcija
-            text     = _extract_text(pdf_bytes)
-            is_text  = _is_text_pdf(text)
+        with st.expander("📨 Sirovi GPT odgovor", expanded=True):
+            st.code(raw, language="json")
 
-            st.info(f"Mod: **{'TEXT' if is_text else 'VISION'}** | "
-                    f"Znakova: {len(re.sub(r'\s+','',text))}")
+        try:
+            m        = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
+            json_str = m.group(1) if m else raw
+            data     = json.loads(json_str)
+            if not isinstance(data, list):
+                data = [data]
+            st.success(f"✅ Pronađeno dokumenata: **{len(data)}**")
+            st.json(data)
+        except Exception as e:
+            st.error(f"❌ JSON parse greška: {e}")
 
-            # Priprema poruka
-            if is_text:
-                messages = [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": (
-                        f"Fajl: {uploaded.name}\n\n"
-                        "Pronađi i izvuci SVE dokumente iz teksta ispod.\n\n"
-                        f"TEKST DOKUMENTA:\n{text}"
-                    )},
-                ]
-            else:
-                b64_pages = _pdf_to_b64_images(pdf_bytes)
-                b64       = _combine_images(b64_pages) if len(b64_pages) > 1 else b64_pages[0]
-                st.caption(f"Slike: {len(b64_pages)} stranica(e)")
-                messages = [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
-                            "detail": "high",
-                        }},
-                        {"type": "text", "text": (
-                            f"Fajl: {uploaded.name}\n"
-                            "Pronađi i izvuci SVE dokumente s ove slike."
-                        )},
-                    ]},
-                ]
-
-            try:
-                with st.spinner("Čekam GPT odgovor..."):
-                    resp = client.chat.completions.create(
-                        model="gpt-4o",
-                        max_tokens=4096,
-                        temperature=0,
-                        messages=messages,
-                    )
-
-                raw = resp.choices[0].message.content.strip()
-
-                st.caption(
-                    f"Model: `{resp.model}` | "
-                    f"Prompt tokeni: `{resp.usage.prompt_tokens}` | "
-                    f"Output tokeni: `{resp.usage.completion_tokens}`"
-                )
-
-                # Sirovi odgovor
-                with st.expander("📨 Sirovi GPT odgovor", expanded=True):
-                    st.code(raw, language="json")
-
-                # Parsirani JSON
-                try:
-                    m        = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
-                    json_str = m.group(1) if m else raw
-                    data     = json.loads(json_str)
-                    if not isinstance(data, list):
-                        data = [data]
-                    st.success(f"✅ Parsirano — pronađeno dokumenata: **{len(data)}**")
-                    st.json(data)
-                except Exception as e:
-                    st.error(f"❌ JSON parse greška: {e}")
-
-            except Exception as e:
-                st.error(f"❌ GPT poziv nije uspio: `{e}`")
+    except Exception as e:
+        st.error(f"❌ GPT greška: `{e}`")
