@@ -400,8 +400,9 @@ def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
                     "role": "user",
                     "content": (
                         f"Fajl: {filename}\n\n"
-                        "Pronađi i izvuci SVE dokumente iz teksta ispod. "
-                        "Vrati JSON array — jedan objekt po dokumentu.\n\n"
+                        "Pronađi SVE dokumente u tekstu ispod i vrati JSON array. "
+                        "Koristi ISKLJUČIVO podatke koji su eksplicitno navedeni u tekstu. "
+                        "NE izmišljaj podatke koji nisu u tekstu — ostavi ih kao prazne stringove.\n\n"
                         f"TEKST DOKUMENTA:\n{text}"
                     ),
                 },
@@ -441,9 +442,12 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
                         {
                             "type": "text",
                             "text": (
-                                f"Fajl: {filename}\n"
-                                "Pronađi i izvuci SVE dokumente s ove slike. "
-                                "Vrati JSON array — jedan objekt po dokumentu."
+                                f"Fajl: {filename}\n\n"
+                                "VAŽNO: Ovo je skenirana slika dokumenta. "
+                                "Čitaj ISKLJUČIVO ono što je fizički vidljivo na slici. "
+                                "NE izmišljaj, NE pretpostavljaj, NE koristi podatke iz naziva fajla.\n\n"
+                                "Pronađi SVE dokumente na slici i vrati JSON array. "
+                                "Ako neko polje nije vidljivo na slici, ostavi ga kao prazan string."
                             ),
                         },
                     ],
