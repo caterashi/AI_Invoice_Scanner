@@ -1,7 +1,6 @@
 """
 pages/upload.py
 ===============
-Redizajnirana upload stranica sa light/dark prikazom.
 """
 
 from __future__ import annotations
