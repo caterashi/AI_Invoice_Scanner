@@ -1,59 +1,38 @@
 """
 sidebar.py
 ==========
-Streamlit sidebar navigacija s tri stranice:
-  - 📊 Pregled       — pregled svih uvezenih faktura
-  - 📤 Učitaj račun  — upload i AI ekstrakcija
-  - ⚙️  Postavke     — API ključ, model, putanja za export
+Sidebar navigacija — renderuje meni i vraća naziv aktivne stranice.
 """
 
 from __future__ import annotations
-from pathlib import Path
+
 import streamlit as st
 
-PAGES = {
-    "📊 Pregled":       "pregled",
-    "📤 Učitaj račun":  "upload",
-    "⚙️  Postavke":     "postavke",
-}
 
-_DEFAULT_PAGE = "📤 Učitaj račun"
-
-
-def _init_state() -> None:
-    defaults = {
-        "active_page":    _DEFAULT_PAGE,
-        "openai_api_key": "",
-        "selected_model": "gpt-4o",
-        "export_path":    str(Path(__file__).parent / "output" / "fakture.xlsx"),
-        "auto_export":    True,
-        "invoices":       [],
-        "last_export":    None,
-    }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
+_PAGES = [
+    {"key": "upload",  "label": "📤 Učitaj račune", "desc": "Upload i ekstrakcija PDF faktura"},
+    {"key": "pregled", "label": "📊 Pregled",        "desc": "Pregled svih unesenih faktura"},
+]
 
 
 def render_sidebar() -> str:
     """
-    Renderuje sidebar navigaciju.
-    Vraća ključ aktivne stranice: "pregled" | "upload" | "postavke"
+    Renderuje sidebar i vraća key aktivne stranice.
+    Vraća: "upload" ili "pregled".
     """
-    _init_state()
-
     with st.sidebar:
+
+        # ── Logo / naslov ─────────────────────────────────────────────────
         st.markdown(
             """
-            <div style="text-align:center; padding: 10px 0 18px 0;">
-              <div style="font-size:2.2rem;">🧾</div>
-              <div style="font-size:1.15rem; font-weight:700;
-                          color:#1F3864; line-height:1.2;">
-                Faktura<span style="color:#2E75B6;">AI</span>
-              </div>
-              <div style="font-size:0.72rem; color:#888; margin-top:2px;">
-                AI ekstrakcija podataka s računa
-              </div>
+            <div style="text-align:center; padding: 1.2rem 0 0.8rem 0;">
+                <span style="font-size:2.6rem;">🧾</span>
+                <h2 style="margin:0.3rem 0 0 0; font-size:1.5rem; font-weight:700;">
+                    FakturaAI
+                </h2>
+                <p style="margin:0.2rem 0 0 0; font-size:0.75rem; color:#888;">
+                    Ekstrakcija podataka s faktura
+                </p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -61,94 +40,41 @@ def render_sidebar() -> str:
 
         st.divider()
 
-        st.markdown(
-            "<p style='font-size:0.72rem; font-weight:600; "
-            "text-transform:uppercase; letter-spacing:0.07em; "
-            "color:#888; margin-bottom:6px;'>Navigacija</p>",
-            unsafe_allow_html=True,
-        )
+        # ── Navigacija ────────────────────────────────────────────────────
+        if "active_page" not in st.session_state:
+            st.session_state["active_page"] = "upload"
 
-        for label in PAGES:
-            is_active = st.session_state["active_page"] == label
+        for page in _PAGES:
+            is_active = st.session_state["active_page"] == page["key"]
             if st.button(
-                label,
-                key=f"nav_{label}",
+                page["label"],
+                key=f"nav_{page['key']}",
                 use_container_width=True,
                 type="primary" if is_active else "secondary",
+                help=page["desc"],
             ):
-                st.session_state["active_page"] = label
+                st.session_state["active_page"] = page["key"]
                 st.rerun()
 
         st.divider()
 
-        invoices = st.session_state.get("invoices", [])
-        n_total  = len(invoices)
-        n_valid  = sum(1 for inv in invoices if getattr(inv, "_valid", True))
-        n_warn   = sum(
-            1 for inv in invoices
-            if getattr(inv, "_warnings", []) and getattr(inv, "_valid", True)
-        )
-        n_err = n_total - n_valid
-
-        st.markdown(
-            "<p style='font-size:0.72rem; font-weight:600; "
-            "text-transform:uppercase; letter-spacing:0.07em; "
-            "color:#888; margin-bottom:8px;'>Statistika sesije</p>",
-            unsafe_allow_html=True,
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Ukupno", n_total)
-        with col2:
-            st.metric("Valjane", n_valid)
-
-        if n_warn > 0 or n_err > 0:
-            col3, col4 = st.columns(2)
-            with col3:
-                st.metric("⚠️ Upoz.", n_warn)
-            with col4:
-                st.metric("❌ Greške", n_err)
-
-        last = st.session_state.get("last_export")
-        if last:
-            st.caption(f"Zadnji export: {last.strftime('%d.%m.%Y %H:%M')}")
-
-        st.divider()
-
-        api_key = st.session_state.get("openai_api_key", "")
-        if api_key and api_key.startswith("sk-"):
-            st.success("✅ API ključ postavljen")
+        # ── Brojač faktura ─────────────────────────────────────────────────
+        invoice_count = len(st.session_state.get("invoices", []))
+        if invoice_count > 0:
+            st.metric(label="Faktura u listi", value=invoice_count)
         else:
-            st.warning("⚠️ API ključ nije postavljen")
-            if st.button("→ Idi na Postavke", use_container_width=True):
-                st.session_state["active_page"] = "⚙️  Postavke"
-                st.rerun()
+            st.caption("📭 Lista faktura je prazna")
 
+        # ── Footer ─────────────────────────────────────────────────────────
         st.markdown(
-            "<div style='text-align:center; font-size:0.68rem; "
-            "color:#bbb; padding-top:10px;'>"
-            "FakturaAI v1.0 · Powered by GPT-4o"
-            "</div>",
+            """
+            <div style="position:fixed; bottom:1rem; font-size:0.7rem; color:#bbb;">
+                FakturaAI &nbsp;·&nbsp; powered by GPT-4o
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-    if st.session_state["active_page"] not in PAGES:
-        st.session_state["active_page"] = _DEFAULT_PAGE
-    return PAGES[st.session_state["active_page"]]
+    return st.session_state["active_page"]
 
-
-def go_to(page_label: str) -> None:
-    """Programski navigiraj na stranicu."""
-    if page_label in PAGES:
-        st.session_state["active_page"] = page_label
-        st.rerun()
-    else:
-        raise ValueError(f"Nepoznata stranica: '{page_label}'. Dozvoljene: {list(PAGES.keys())}")
-
-
-def current_page() -> str:
-    """Vrati ključ trenutno aktivne stranice."""
-    _init_state()
-    return PAGES.get(st.session_state["active_page"], "upload")
 
