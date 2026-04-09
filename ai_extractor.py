@@ -1,18 +1,18 @@
 """
 ai_extractor.py
 ===============
-AI ekstrakcija podataka s faktura koristeći OpenAI GPT-4o.
+Ekstrakcija podataka s PDF faktura pomoću OpenAI GPT-4o.
 
-PDF fajlovi se obrađuju na dva načina:
-  1. Tekstualni PDF  (ima OCR sloj) → tekst se šalje direktno GPT-4o
-  2. Slikovni PDF    (skenirana slika) → stranice → slike → GPT-4o Vision
-
-Oba tipa podržavaju više dokumenata u jednom PDF-u.
+Podržava:
+- tekstualne PDF-ove (PyMuPDF / pdfplumber)
+- skenirane PDF-ove (pdf2image + GPT Vision)
+- više dokumenata u jednom PDF-u
 """
 
 from __future__ import annotations
 
 import base64
+import html
 import io
 import json
 import os
@@ -31,185 +31,137 @@ load_dotenv(Path(__file__).parent / ".env")
 # ─────────────────────────────────────────────────────────────────────────────
 
 FIELDS = [
-    "BROJFAKT", "DATUMF", "DATUMPF",
-    "NAZIVPP", "SJEDISTEPP",
-    "IDPDVPP", "JIBPUPP",
-    "IZNBEZPDV", "IZNPDV", "IZNSAPDV",
+    "BROJFAKT",
+    "DATUMF",
+    "DATUMPF",
+    "NAZIVPP",
+    "SJEDISTEPP",
+    "IDPDVPP",
+    "JIBPUPP",
+    "IZNBEZPDV",
+    "IZNSAPDV",
+    "IZNPDV",
 ]
 
 _MIN_TEXT_CHARS = 100
+_DPI = 200
+_JPEG_QUALITY = 92
 _MAX_IMG_HEIGHT = 8000
-_MAX_IMG_WIDTH  = 3000
-_DPI            = 200
-_JPEG_QUALITY   = 92
-_VISION_BATCH   = 4   # max stranica po jednom GPT Vision pozivu
+_MAX_IMG_WIDTH = 3000
+_VISION_BATCH = 4
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model podataka
+# Model
 # ─────────────────────────────────────────────────────────────────────────────
 
 class InvoiceData(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
-    BROJFAKT:   str = Field(default="")
-    DATUMF:     str = Field(default="")
-    DATUMPF:    str = Field(default="")
-    NAZIVPP:    str = Field(default="")
+    BROJFAKT: str = Field(default="")
+    DATUMF: str = Field(default="")
+    DATUMPF: str = Field(default="")
+    NAZIVPP: str = Field(default="")
     SJEDISTEPP: str = Field(default="")
-    IDPDVPP:    str = Field(default="")
-    JIBPUPP:    str = Field(default="")
-    IZNBEZPDV:  str = Field(default="")
-    IZNPDV:     str = Field(default="")
-    IZNSAPDV:   str = Field(default="")
+    IDPDVPP: str = Field(default="")
+    JIBPUPP: str = Field(default="")
+    IZNBEZPDV: str = Field(default="")
+    IZNSAPDV: str = Field(default="")
+    IZNPDV: str = Field(default="")
 
-    # Interni metapodaci — ne idu u Excel
-    _filename: str  = ""
-    _valid:    bool = True
-    _warnings: list = []
+    _filename: str = ""
+    _valid: bool = True
+    _warnings: list[str] = []
+
+    @field_validator("BROJFAKT", "DATUMF", "DATUMPF", "NAZIVPP", "SJEDISTEPP")
+    @classmethod
+    def clean_text(cls, v: str) -> str:
+        if not v:
+            return ""
+        return re.sub(r"\s+", " ", str(v)).strip()
 
     @field_validator("IDPDVPP")
     @classmethod
-    def fix_id(cls, v: str) -> str:
+    def normalize_idpdvpp(cls, v: str) -> str:
         if not v:
-            return v
-        d = re.sub(r"\D", "", v)
+            return ""
+        d = re.sub(r"\D", "", str(v))
         if len(d) == 12:
             d = "4" + d
         elif len(d) == 13 and not d.startswith("4"):
             d = "4" + d[1:]
-        return d if len(d) == 13 else v
+        return d if len(d) == 13 and d.startswith("4") else str(v).strip()
 
     @field_validator("JIBPUPP")
     @classmethod
-    def fix_jib(cls, v: str) -> str:
+    def normalize_jibpupp(cls, v: str) -> str:
         if not v:
-            return v
-        d = re.sub(r"\D", "", v)
+            return ""
+        d = re.sub(r"\D", "", str(v))
         if len(d) == 13 and d.startswith("4"):
             d = d[1:]
-        return d if len(d) == 12 else v
+        return d if len(d) == 12 else str(v).strip()
 
-    @field_validator("IZNBEZPDV", "IZNPDV", "IZNSAPDV")
+    @field_validator("IZNBEZPDV", "IZNSAPDV", "IZNPDV")
     @classmethod
-    def fix_amount(cls, v: str) -> str:
-        if not v:
-            return v
-        v = v.strip().replace(" ", "").replace("\xa0", "").replace("KM", "")
-        if re.match(r"^\d{1,3}(\.\d{3})+(,\d{1,2})?$", v):
-            v = v.replace(".", "").replace(",", ".")
+    def normalize_amount(cls, v: str) -> str:
+        if v in (None, ""):
+            return ""
+        s = str(v).strip()
+        s = s.replace("\xa0", " ").replace("KM", "").replace("BAM", "")
+        s = s.replace(" ", "")
+        if re.match(r"^\d{1,3}(\.\d{3})+(,\d{1,2})?$", s):
+            s = s.replace(".", "").replace(",", ".")
         else:
-            v = v.replace(",", ".")
+            s = s.replace(",", ".")
         try:
-            return str(round(float(v), 2))
-        except ValueError:
-            return v
+            return f"{float(s):.2f}"
+        except Exception:
+            return str(v).strip()
 
     def to_dict(self) -> dict[str, str]:
         return {f: getattr(self, f, "") for f in FIELDS}
 
-    def __iter__(self):
-        return iter(self.to_dict().items())
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sistemski prompt
+# Prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """Ti si ekspert za čitanje i ekstrakciju podataka s komercijalnih dokumenata iz Bosne i Hercegovine i regiona (fakture, računi, otpremnice, fiskalni izvještaji i sl.).
+_SYSTEM_PROMPT = """
+Ti si ekspert za ekstrakciju podataka sa faktura i računa iz Bosne i Hercegovine i regiona.
 
-Dokumenti mogu biti bilo kojeg formata i od bilo kojeg dobavljača. Tvoj zadatak je da razumiješ dokument, bez obzira na izgled ili strukturu, i izvučeš tražene podatke.
+Tvoj zadatak je da iz dokumenta izvučeš podatke i vratiš ISKLJUČIVO validan JSON array.
+Ne piši objašnjenja, uvod, napomene ni markdown osim čistog JSON-a.
 
-════════════════════════════════════════
-PRAVILO BR. 1 — DOBAVLJAČ vs KUPAC
-════════════════════════════════════════
+PDF može sadržavati jedan ili više dokumenata. Za SVAKI dokument vrati jedan JSON objekt.
+Ako neko polje ne postoji ili nije jasno vidljivo, upiši prazan string "".
 
-DOBAVLJAČ = firma koja je IZDALA dokument
-  → prepoznaješ ga po: zaglavlju, logu, "Izdao:", "Prodavac:", adresa pošiljaoca
-  → NJEGA unosiš u NAZIVPP, SJEDISTEPP, IDPDVPP, JIBPUPP
+Ključevi MORAJU biti TAČNO ovi:
 
-KUPAC = firma koja PRIMA dokument
-  → prepoznaješ ga po: "Kupac:", "Primalac:", "Isporučiti:", tabela s kupcem
-  → podatke kupca POTPUNO IGNORIŠEŠ
+{
+  "BROJFAKT": "Broj računa/fakture (npr. 432/10, 9034508513, 600398-1-0126-1)",
+  "DATUMF": "Datum izdavanja fakture (format DD.MM.GGGG)",
+  "DATUMPF": "Datum prijema fakture — ako postoji poseban datum prijema/evidentiranja, upiši ga (format DD.MM.GGGG). Ako ne postoji, ostavi prazan string",
+  "NAZIVPP": "Puni naziv DOBAVLJAČA — firma KOJA JE IZDALA račun (čiji je logo/zaglavlje). To je firma koja ŠALJE račun, NE firma koja ga prima!",
+  "SJEDISTEPP": "Puna adresa dobavljača sa poštanskim brojem i mjestom",
+  "IDPDVPP": "ID broj (JIB) dobavljača - MORA biti TAČNO 13 cifara i počinjati sa 4. Ako na računu vidiš broj koji nema 13 cifara ili ne počinje sa 4, dodaj vodeću 4 da bude 13 cifara",
+  "JIBPUPP": "PDV broj dobavljača - MORA biti TAČNO 12 cifara. To je isti broj kao ID/JIB ali BEZ vodeće cifre 4. Ako dobavljač NIJE u PDV sistemu (nema PDV broj na računu), ostavi prazan string",
+  "IZNBEZPDV": "Iznos BEZ PDV-a (decimalni separator tačka, npr. 155.87)",
+  "IZNSAPDV": "UKUPAN iznos za uplatu SA PDV-om (npr. 182.37)",
+  "IZNPDV": "Iznos PDV-a u KM (NE procenat, nego koliko PDV iznosi u novcu, npr. 26.50)"
+}
 
-════════════════════════════════════════
-POLJA KOJA TRAŽIŠ
-════════════════════════════════════════
+Pravila:
+- Čitaj ISKLJUČIVO ono što je eksplicitno vidljivo u dokumentu ili tekstu.
+- NE izmišljaj podatke.
+- NE koristi naziv fajla kao izvor podataka.
+- Ako postoji više iznosa ili više stopa PDV-a, vrati ukupni zbir za dokument.
+- Iznose vrati samo kao broj, bez valute, sa decimalnom tačkom.
+- DATUMF i DATUMPF vrati u formatu DD.MM.GGGG ako su vidljivi.
+- DOBAVLJAČ je izdavalac računa; kupca ignoriši.
+- Ako je prisutan samo jedan identifikacioni broj dobavljača, popuni IDPDVPP po pravilu 13 cifara; JIBPUPP popuni samo ako je na dokumentu jasno naveden PDV/PIB broj ili se pouzdano može dobiti skidanjem vodeće 4 iz istog broja.
 
-BROJFAKT
-  Jedinstveni identifikator dokumenta.
-  Može biti: broj fakture, broj računa, broj otpremnice, DI broj, broj presjeка, itd.
-  Uzmi ono što taj dokument identifikuje — broj koji je jedinstven za taj dokument.
-
-DATUMF
-  Datum kada je dokument izdat. Format: DD.MM.GGGG
-  Može se zvati: datum fakture, datum računa, datum izdavanja, datum i sat (uzmi samo datum)
-
-DATUMPF
-  Datum prijema dokumenta, AKO je eksplicitno napisan. Inače ostavi "".
-
-NAZIVPP
-  Puni naziv dobavljača — onako kako piše u zaglavlju dokumenta.
-  Primjeri naziva: "d.o.o.", "D.D.", "J.U.", "j.t.p." itd. — sve što nađeš.
-
-SJEDISTEPP
-  Puna adresa dobavljača: ulica + broj, poštanski broj, grad.
-  Ako su adresni elementi na više redova, spoji ih u jednu liniju.
-
-IDPDVPP
-  Identifikacijski/JIB broj dobavljača.
-  Karakteristike: TAČNO 13 cifara, počinje cifrom 4.
-  Labele koje ga označavaju: "ID broj PU", "JIB", "ID broj", "Identifikacijski broj"
-  Ako nađeš broj s 12 cifara koji počinje s drugom cifrom → dodaj "4" ispred.
-  Ako ne postoji → ostavi "".
-
-JIBPUPP
-  PDV / PIB broj dobavljača.
-  Karakteristike: TAČNO 12 cifara (isti broj kao IDPDVPP ali bez vodeće "4").
-  Labele: "PDV broj", "PIB", "Poreski broj", "PDV/PIB"
-  Ako dobavljač nije PDV obveznik → ostavi "".
-
-IZNBEZPDV
-  Iznos bez PDV-a, decimalna tačka (npr. 149.59).
-  Labele: "Ukupno bez PDV", "Osnovica", "Neto iznos", ili izračunaj: IZNSAPDV − IZNPDV.
-  Za fiskalne izvještaje: ukupni promet (TU) minus ukupni porez (ZU).
-
-IZNPDV
-  Iznos PDV-a u KM, decimalna tačka (npr. 25.43).
-  Labele: "PDV iznos", "Porez", "ZU", "Ukupno PDV 17%"
-  NIJE procenat — tražiš KM iznos.
-
-IZNSAPDV
-  Ukupan iznos za naplatu s PDV-om, decimalna tačka (npr. 175.02).
-  Labele: "Ukupno za naplatu", "Za platiti", "Ukupan iznos", "TU", "Iznos s PDV"
-
-════════════════════════════════════════
-PRAVILA ZA IZNOSE
-════════════════════════════════════════
-
-- Decimalni separator u odgovoru: UVIJEK tačka (.) — nikad zarez
-- Pretvori zarez u tačku: 1.234,56 → 1234.56
-- Ne upisuj valutu (KM, BAM) — samo broj
-- IZNBEZPDV + IZNPDV treba biti ≈ IZNSAPDV (dozvoljeno odstupanje ±0.06 zbog zaokruživanja)
-- Ako dokument prikazuje više PDV stopa, saberi sve u jedno: ukupna osnovica, ukupni PDV, ukupno za naplatu
-
-════════════════════════════════════════
-PRAVILA ZA VIŠE DOKUMENATA U PDF-u
-════════════════════════════════════════
-
-PDF može sadržavati više odvojenih dokumenata (N faktura, N fiskalnih izvještaja itd.).
-Svaki dokument ima svoj jedinstven broj (BROJFAKT).
-
-→ Za svaki pronađeni dokument napravi jedan JSON objekt.
-→ Vrati JSON array s tačno onoliko objekata koliko ima dokumenata.
-→ Podaci dobavljača (naziv, adresa, ID, PDV) su često isti za sve — kopiraj ih u svaki objekt.
-
-════════════════════════════════════════
-FORMAT ODGOVORA
-════════════════════════════════════════
-
-Vraćaj ISKLJUČIVO validan JSON array — bez teksta, objašnjenja ili markdown blokova:
-
+Vrati isključivo JSON array, npr.:
 [
   {
     "BROJFAKT": "",
@@ -220,24 +172,27 @@ Vraćaj ISKLJUČIVO validan JSON array — bez teksta, objašnjenja ili markdown
     "IDPDVPP": "",
     "JIBPUPP": "",
     "IZNBEZPDV": "",
-    "IZNPDV": "",
-    "IZNSAPDV": ""
+    "IZNSAPDV": "",
+    "IZNPDV": ""
   }
 ]
-"""
+""".strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenAI klijent
+# OpenAI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_client():
     from openai import OpenAI
+
     key = (
         st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
     ) or os.getenv("OPENAI_API_KEY", "")
+
     if not key:
-        raise ValueError("OPENAI_API_KEY nije postavljen!")
+        raise ValueError("OPENAI_API_KEY nije postavljen")
+
     return OpenAI(api_key=key)
 
 
@@ -246,128 +201,106 @@ def _active_model(default: str = "gpt-4o") -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF → tekst
+# Ekstrakcija teksta
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_text(pdf_bytes: bytes) -> str:
-    """
-    Pokušava izvući tekst iz PDF-a.
-    Metode (redom): PyMuPDF → pdfplumber → prazan string.
-    PyMuPDF je robusniji i čita više formata fonta.
-    """
-    # Metoda 1: PyMuPDF (fitz) — preporučena
     text = _extract_text_pymupdf(pdf_bytes)
     if _is_text_pdf(text):
         return text
 
-    # Metoda 2: pdfplumber — fallback
     text = _extract_text_pdfplumber(pdf_bytes)
-    return text
+    if _is_text_pdf(text):
+        return text
+
+    return ""
 
 
 def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
-    """
-    Ekstrakcija teksta koristeći PyMuPDF (fitz).
-
-    Redosljed pokušaja po stranici:
-      1. get_text("text")  — brzo, čisto
-      2. get_text("html")  — za nestandardne/Type-3 fontove;
-         img tagovi (base64) se uklanjaju prije provjere
-    """
     try:
         import fitz
-        parts = []
 
+        parts = []
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             for page in doc:
-
-                # Pokušaj 1 — plain text
-                t = page.get_text("text") or ""
-                if len(re.sub(r"\s+", "", t)) > 10:
-                    parts.append(t.strip())
+                text = page.get_text("text") or ""
+                if len(re.sub(r"\s+", "", text)) > 10:
+                    parts.append(text.strip())
                     continue
 
-                # Pokušaj 2 — HTML mod (Type-3 fontovi, nestandardni enkoding)
-                # HTML sadrži ogromne base64 img blokove — uklanjamo ih
-                html = page.get_text("html") or ""
-                if html:
-                    # Ukloni <img ...> tagove (base64 podaci, mogu biti MB veliki)
-                    html = re.sub(r"<img[^>]*>", "", html, flags=re.IGNORECASE)
-                    # Ukloni sve preostale HTML tagove
-                    html = re.sub(r"<[^>]+>", " ", html)
-                    # Dekodiraj HTML entitete
-                    html = (html
-                            .replace("&amp;", "&").replace("&lt;", "<")
-                            .replace("&gt;", ">").replace("&nbsp;", " ")
-                            .replace("&#39;", "'").replace("&quot;", '"'))
-                    # Normalizuj razmake
-                    html = re.sub(r"\s+", " ", html).strip()
-
-                    if len(re.sub(r"\s+", "", html)) > 10:
-                        parts.append(html)
+                html_text = page.get_text("html") or ""
+                if html_text:
+                    html_text = re.sub(r"<img[^>]*>", " ", html_text, flags=re.IGNORECASE)
+                    html_text = re.sub(r"<[^>]+>", " ", html_text)
+                    html_text = html.unescape(html_text)
+                    html_text = re.sub(r"\s+", " ", html_text).strip()
+                    if len(re.sub(r"\s+", "", html_text)) > 10:
+                        parts.append(html_text)
 
         return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
-    except ImportError:
-        return ""
     except Exception:
         return ""
 
+
 def _extract_text_pdfplumber(pdf_bytes: bytes) -> str:
-    """Ekstrakcija teksta koristeći pdfplumber."""
     try:
         import pdfplumber
+
         parts = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                t = page.extract_text(x_tolerance=2, y_tolerance=2)
-                if t:
-                    parts.append(t)
+                text = page.extract_text(x_tolerance=2, y_tolerance=2)
+                if text and text.strip():
+                    parts.append(text.strip())
+
         return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
     except Exception:
         return ""
 
 
 def _is_text_pdf(text: str) -> bool:
-    """Vraća True ako PDF ima dovoljno teksta za direktnu ekstrakciju."""
-    return len(re.sub(r"\s+", "", text)) >= _MIN_TEXT_CHARS
+    return len(re.sub(r"\s+", "", text or "")) >= _MIN_TEXT_CHARS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF → slike (za slikovne PDF-ove)
+# PDF → slike
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
-    """Konvertuje svaku stranicu PDF-a u base64 JPEG."""
     from pdf2image import convert_from_bytes
     from PIL import Image
 
-    pages   = convert_from_bytes(pdf_bytes, dpi=_DPI)
+    pages = convert_from_bytes(pdf_bytes, dpi=_DPI)
     results = []
+
     for page in pages:
         w, h = page.size
         if h > _MAX_IMG_HEIGHT or w > _MAX_IMG_WIDTH:
             ratio = min(_MAX_IMG_WIDTH / w, _MAX_IMG_HEIGHT / h)
-            page  = page.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+            page = page.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
         buf = io.BytesIO()
         page.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
         results.append(base64.b64encode(buf.getvalue()).decode())
+
     return results
 
 
 def _combine_images(b64_list: list[str]) -> str:
-    """Spaja više base64 slika vertikalno u jednu."""
     from PIL import Image
 
-    images  = [Image.open(io.BytesIO(base64.b64decode(b))) for b in b64_list]
-    max_w   = max(i.width for i in images)
-    total_h = sum(i.height for i in images)
+    images = [Image.open(io.BytesIO(base64.b64decode(b))) for b in b64_list]
+    max_w = max(img.width for img in images)
+    total_h = sum(img.height for img in images)
 
     if total_h > _MAX_IMG_HEIGHT:
-        ratio   = _MAX_IMG_HEIGHT / total_h
-        images  = [i.resize((int(i.width * ratio), int(i.height * ratio)), Image.LANCZOS)
-                   for i in images]
-        max_w   = max(i.width for i in images)
-        total_h = sum(i.height for i in images)
+        ratio = _MAX_IMG_HEIGHT / total_h
+        images = [
+            img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+            for img in images
+        ]
+        max_w = max(img.width for img in images)
+        total_h = sum(img.height for img in images)
 
     combined = Image.new("RGB", (max_w, total_h), (255, 255, 255))
     y = 0
@@ -381,28 +314,27 @@ def _combine_images(b64_list: list[str]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GPT ekstrakcija — tekst mod
+# GPT pozivi
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
-    """Šalje tekst GPT-4o i vraća listu faktura."""
     client = _get_client()
-    model  = _active_model()
+    model = _active_model()
 
     try:
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=4096,
             temperature=0,
+            max_tokens=4096,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
                         f"Fajl: {filename}\n\n"
-                        "Pronađi SVE dokumente u tekstu ispod i vrati JSON array. "
-                        "Koristi ISKLJUČIVO podatke koji su eksplicitno navedeni u tekstu. "
-                        "NE izmišljaj podatke koji nisu u tekstu — ostavi ih kao prazne stringove.\n\n"
+                        "Ispod je tekst iz PDF dokumenta. Koristi ISKLJUČIVO podatke koji se vide u tekstu. "
+                        "NE izmišljaj i NE koristi naziv fajla kao izvor podataka. "
+                        "Vrati JSON array za sve pronađene dokumente.\n\n"
                         f"TEKST DOKUMENTA:\n{text}"
                     ),
                 },
@@ -413,20 +345,15 @@ def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
         return [_error_invoice(filename, str(e))]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GPT ekstrakcija — vision mod
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
-    """Šalje sliku GPT-4o Vision i vraća listu faktura."""
     client = _get_client()
-    model  = _active_model()
+    model = _active_model()
 
     try:
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=4096,
             temperature=0,
+            max_tokens=4096,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
@@ -443,11 +370,10 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
                             "type": "text",
                             "text": (
                                 f"Fajl: {filename}\n\n"
-                                "VAŽNO: Ovo je skenirana slika dokumenta. "
-                                "Čitaj ISKLJUČIVO ono što je fizički vidljivo na slici. "
-                                "NE izmišljaj, NE pretpostavljaj, NE koristi podatke iz naziva fajla.\n\n"
-                                "Pronađi SVE dokumente na slici i vrati JSON array. "
-                                "Ako neko polje nije vidljivo na slici, ostavi ga kao prazan string."
+                                "Ovo je skenirana slika dokumenta. Čitaj ISKLJUČIVO ono što je fizički vidljivo na slici. "
+                                "NE izmišljaj, NE pretpostavljaj i NE koristi naziv fajla kao izvor podataka. "
+                                "Ako neko polje nije jasno vidljivo, ostavi prazan string. "
+                                "Vrati JSON array za sve dokumente koji se vide na slici."
                             ),
                         },
                     ],
@@ -459,88 +385,28 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
         return [_error_invoice(filename, str(e))]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Glavna javna funkcija
-# ─────────────────────────────────────────────────────────────────────────────
-
-def extract_invoices_from_pdf(
-    pdf_bytes: bytes,
-    filename: str = "",
-) -> list[InvoiceData]:
-    """
-    Ekstrahuje sve fakture iz PDF fajla.
-
-    Automatski detektuje tip PDF-a:
-    - Tekstualni PDF (ima OCR sloj) → tekst → GPT-4o
-    - Slikovni PDF (skeniran)       → slike → GPT-4o Vision
-
-    Za višestranične slikovne PDF-ove stranice se šalju u batch-evima
-    (_VISION_BATCH stranica po pozivu) da bi tekst ostao čitljiv za GPT.
-
-    Parametri
-    ---------
-    pdf_bytes : sadržaj PDF fajla kao bytes
-    filename  : naziv fajla (za logove i labele)
-
-    Vraća
-    -----
-    Lista InvoiceData objekata — jedan po dokumentu pronađenom u PDF-u.
-    """
-    text = _extract_text(pdf_bytes)
-
-    if _is_text_pdf(text):
-        return _extract_via_text(text, filename)
-
-    try:
-        b64_pages = _pdf_to_b64_images(pdf_bytes)
-    except Exception as e:
-        return [_error_invoice(filename, f"Greška pri konverziji PDF→slika: {e}")]
-
-    if not b64_pages:
-        return [_error_invoice(filename, "PDF nema stranica")]
-
-    # Jedna stranica — direktno
-    if len(b64_pages) == 1:
-        return _extract_via_vision(b64_pages[0], filename)
-
-    # Više stranica — batch obrada
-    return _extract_via_vision_batched(b64_pages, filename)
-
-
-def _extract_via_vision_batched(
-    b64_pages: list[str],
-    filename: str,
-) -> list[InvoiceData]:
-    """
-    Obrađuje višestranični PDF u batch-evima od _VISION_BATCH stranica.
-
-    Problem koji rješava:
-      Slanje svih N stranica u jednu sliku znači da GPT Vision dobija
-      svaku stranicu u minijaturnoj rezoluciji (nečitljivo).
-      Batch obrada čuva rezoluciju i tačnost ekstrakcije.
-
-    Nakon svih poziva deduplikuje fakture po BROJFAKT.
-    """
-    all_invoices: list[InvoiceData] = []
+def _extract_via_vision_batched(b64_pages: list[str], filename: str) -> list[InvoiceData]:
+    all_items: list[InvoiceData] = []
     total = len(b64_pages)
 
     for start in range(0, total, _VISION_BATCH):
-        batch     = b64_pages[start : start + _VISION_BATCH]
-        end_page  = min(start + _VISION_BATCH, total)
-        label     = f"{filename} [str.{start + 1}–{end_page}/{total}]"
+        batch = b64_pages[start:start + _VISION_BATCH]
+        end = min(start + _VISION_BATCH, total)
+        label = f"{filename} [str.{start + 1}-{end}/{total}]"
+        image = _combine_images(batch) if len(batch) > 1 else batch[0]
+        all_items.extend(_extract_via_vision(image, label))
 
-        b64 = _combine_images(batch) if len(batch) > 1 else batch[0]
-        results = _extract_via_vision(b64, label)
-        all_invoices.extend(results)
-
-    # Deduplikacija — isti BROJFAKT može se pojaviti na granici batch-eva
-    seen: set[str] = set()
     unique: list[InvoiceData] = []
-    for inv in all_invoices:
-        key = inv.BROJFAKT.strip()
-        if key and key in seen:
+    seen: set[tuple[str, str, str]] = set()
+    for inv in all_items:
+        key = (
+            inv.BROJFAKT.strip(),
+            inv.DATUMF.strip(),
+            inv.IZNSAPDV.strip(),
+        )
+        if any(key) and key in seen:
             continue
-        if key:
+        if any(key):
             seen.add(key)
         unique.append(inv)
 
@@ -548,46 +414,75 @@ def _extract_via_vision_batched(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parsiranje GPT odgovora
+# Javna funkcija
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[InvoiceData]:
+    text = _extract_text(pdf_bytes)
+    if _is_text_pdf(text):
+        return _extract_via_text(text, filename)
+
+    try:
+        pages = _pdf_to_b64_images(pdf_bytes)
+    except Exception as e:
+        return [_error_invoice(filename, f"Greška pri konverziji PDF→slika: {e}")]
+
+    if not pages:
+        return [_error_invoice(filename, "PDF nema stranica")]
+
+    if len(pages) == 1:
+        return _extract_via_vision(pages[0], filename)
+
+    return _extract_via_vision_batched(pages, filename)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parsiranje
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
-    """Parsira GPT odgovor u listu InvoiceData objekata."""
+    if not raw:
+        return [_error_invoice(filename, "Prazan odgovor modela")]
 
-    # Ukloni markdown code block ako postoji
+    raw = raw.strip()
     m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
     if m:
-        raw = m.group(1)
+        raw = m.group(1).strip()
+
+    if raw.startswith("Na osnovu") or raw.startswith("Evo"):
+        m2 = re.search(r"(\[[\s\S]+\]|\{[\s\S]+\})", raw)
+        if m2:
+            raw = m2.group(1).strip()
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
-        m = re.search(r"(\[[\s\S]+?\]|\{[\s\S]+?\})", raw)
-        if not m:
-            return [_error_invoice(filename, f"Nije moguće parsirati odgovor: {raw[:300]}")]
+    except Exception:
+        m3 = re.search(r"(\[[\s\S]+\]|\{[\s\S]+\})", raw)
+        if not m3:
+            return [_error_invoice(filename, f"JSON parse greška: {raw[:300]}")]
         try:
-            data = json.loads(m.group(1))
-        except json.JSONDecodeError:
+            data = json.loads(m3.group(1))
+        except Exception:
             return [_error_invoice(filename, f"JSON parse greška: {raw[:300]}")]
 
     if isinstance(data, dict):
         data = [data]
-    if not isinstance(data, list) or not data:
-        return [_error_invoice(filename, "Prazan ili neispravan odgovor")]
 
-    results = []
-    for i, item in enumerate(data):
+    if not isinstance(data, list) or not data:
+        return [_error_invoice(filename, "Model nije vratio validan JSON array")]
+
+    results: list[InvoiceData] = []
+    for i, item in enumerate(data, start=1):
         if not isinstance(item, dict):
             continue
+
+        payload = {field: str(item.get(field, "") or "").strip() for field in FIELDS}
+
         try:
-            inv = InvoiceData(**{
-                k: str(v).strip() if v is not None else ""
-                for k, v in item.items()
-                if k in FIELDS
-            })
-            inv._filename = f"{filename} [{i + 1}/{len(data)}]" if len(data) > 1 else filename
-            inv._valid    = True
+            inv = InvoiceData(**payload)
+            inv._filename = f"{filename} [{i}/{len(data)}]" if len(data) > 1 else filename
             inv._warnings = _validate(inv)
+            inv._valid = len(inv._warnings) == 0
             results.append(inv)
         except Exception as e:
             results.append(_error_invoice(filename, str(e)))
@@ -600,45 +495,60 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _validate(inv: InvoiceData) -> list[str]:
-    """Vraća listu upozorenja za fakturu."""
-    w = []
+    warnings: list[str] = []
 
-    if not inv.BROJFAKT:   w.append("Broj fakture nije pronađen")
-    if not inv.DATUMF:     w.append("Datum fakture nije pronađen")
-    if not inv.NAZIVPP:    w.append("Naziv dobavljača nije pronađen")
-    if not inv.IZNSAPDV:   w.append("Ukupan iznos nije pronađen")
+    if not inv.BROJFAKT:
+        warnings.append("BROJFAKT nije pronađen")
+    if not inv.DATUMF:
+        warnings.append("DATUMF nije pronađen")
+    if not inv.NAZIVPP:
+        warnings.append("NAZIVPP nije pronađen")
+    if not inv.IZNSAPDV:
+        warnings.append("IZNSAPDV nije pronađen")
 
-    if inv.IDPDVPP and (len(inv.IDPDVPP) != 13 or not inv.IDPDVPP.startswith("4")):
-        w.append(f"IDPDVPP nije validan: '{inv.IDPDVPP}'")
-    if inv.JIBPUPP and len(inv.JIBPUPP) != 12:
-        w.append(f"JIBPUPP nije 12 cifara: '{inv.JIBPUPP}'")
+    if inv.IDPDVPP:
+        digits = re.sub(r"\D", "", inv.IDPDVPP)
+        if len(digits) != 13 or not digits.startswith("4"):
+            warnings.append(f"IDPDVPP nije validan: {inv.IDPDVPP}")
+
+    if inv.JIBPUPP:
+        digits = re.sub(r"\D", "", inv.JIBPUPP)
+        if len(digits) != 12:
+            warnings.append(f"JIBPUPP nije validan: {inv.JIBPUPP}")
+
+    try:
+        if inv.IDPDVPP and inv.JIBPUPP:
+            id_d = re.sub(r"\D", "", inv.IDPDVPP)
+            pdv_d = re.sub(r"\D", "", inv.JIBPUPP)
+            if len(id_d) == 13 and len(pdv_d) == 12 and id_d[1:] != pdv_d:
+                warnings.append("IDPDVPP i JIBPUPP nisu međusobno usklađeni")
+    except Exception:
+        pass
 
     try:
         if inv.IZNBEZPDV and inv.IZNPDV and inv.IZNSAPDV:
             bez = float(inv.IZNBEZPDV)
             pdv = float(inv.IZNPDV)
-            sa  = float(inv.IZNSAPDV)
+            sa = float(inv.IZNSAPDV)
             if abs((bez + pdv) - sa) > 0.06:
-                w.append(f"Iznosi ne odgovaraju: {bez} + {pdv} ≠ {sa}")
-    except (ValueError, TypeError):
-        pass
+                warnings.append(f"Iznosi nisu usklađeni: {bez:.2f} + {pdv:.2f} != {sa:.2f}")
+    except Exception:
+        warnings.append("Jedan ili više iznosa nisu numerički")
 
-    return w
+    return warnings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pomoćne funkcije
+# Pomoćne
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _error_invoice(filename: str, msg: str) -> InvoiceData:
-    """Kreira InvoiceData objekt koji označava grešku."""
-    inv           = InvoiceData()
+    inv = InvoiceData()
     inv._filename = filename
-    inv._valid    = False
+    inv._valid = False
     inv._warnings = [msg]
     return inv
 
 
 def get_available_models() -> list[str]:
-    """Vraća listu dostupnih OpenAI modela."""
     return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
