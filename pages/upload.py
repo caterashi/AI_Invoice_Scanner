@@ -226,9 +226,5 @@ def _render_empty_state() -> None:
         <p style="font-size:1.1rem; margin-top:1rem;">
             Uploaduj PDF fakture da započneš ekstrakciju
         </p>
-        <p style="font-size:0.9rem;">
-            Podržani formati: standardni računi (HERBAVITAL tip),
-            fiskalni izvještaji (EDNA-M/IBFM tip)
-        </p>
     </div>
     """, unsafe_allow_html=True)
