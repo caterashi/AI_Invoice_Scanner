@@ -250,9 +250,39 @@ def _active_model(default: str = "gpt-4o") -> str:
 
 def _extract_text(pdf_bytes: bytes) -> str:
     """
-    Pokušava izvući tekst iz PDF-a koristeći pdfplumber.
-    Vraća prazan string ako PDF nema tekstualnog sloja.
+    Pokušava izvući tekst iz PDF-a.
+    Metode (redom): PyMuPDF → pdfplumber → prazan string.
+    PyMuPDF je robusniji i čita više formata fonta.
     """
+    # Metoda 1: PyMuPDF (fitz) — preporučena
+    text = _extract_text_pymupdf(pdf_bytes)
+    if _is_text_pdf(text):
+        return text
+
+    # Metoda 2: pdfplumber — fallback
+    text = _extract_text_pdfplumber(pdf_bytes)
+    return text
+
+
+def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
+    """Ekstrakcija teksta koristeći PyMuPDF (fitz)."""
+    try:
+        import fitz  # PyMuPDF
+        parts = []
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                t = page.get_text("text")
+                if t and t.strip():
+                    parts.append(t)
+        return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
+
+
+def _extract_text_pdfplumber(pdf_bytes: bytes) -> str:
+    """Ekstrakcija teksta koristeći pdfplumber."""
     try:
         import pdfplumber
         parts = []
