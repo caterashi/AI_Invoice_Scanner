@@ -1,7 +1,6 @@
 """
 sidebar.py
 ==========
-Redizajnirani sidebar sa dark/light opcijom.
 """
 
 from __future__ import annotations
