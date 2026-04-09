@@ -1,7 +1,7 @@
 """
 pages/upload.py
 ===============
-Upload i ekstrakcija podataka iz PDF faktura.
+Redizajnirana upload stranica sa light/dark prikazom.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ _EDITOR_KEY = "upload_editor"
 _RESULTS_KEY = "upload_results"
 _ERRORS_KEY = "upload_errors"
 _LAST_RUN_KEY = "upload_last_run"
+_DARK_KEY = "upload_dark_mode"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,15 +27,10 @@ _LAST_RUN_KEY = "upload_last_run"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_upload() -> None:
-    st.title("📤 Učitaj račune")
-    st.caption("Učitaj jedan ili više PDF fajlova, provjeri rezultat i dodaj potvrđene stavke u listu.")
-
-    if "invoices" not in st.session_state:
-        st.session_state["invoices"] = []
-    if _RESULTS_KEY not in st.session_state:
-        st.session_state[_RESULTS_KEY] = []
-    if _ERRORS_KEY not in st.session_state:
-        st.session_state[_ERRORS_KEY] = []
+    _init_state()
+    dark_mode = _render_topbar()
+    _apply_upload_theme(dark_mode)
+    _render_hero(dark_mode)
 
     uploaded_files = st.file_uploader(
         "Odaberi PDF fajlove",
@@ -44,12 +40,16 @@ def render_upload() -> None:
     )
 
     if not uploaded_files:
-        _render_empty_state()
+        _render_empty_state(dark_mode)
         return
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.caption(f"Odabrano fajlova: **{len(uploaded_files)}**")
+        tone = "dark" if dark_mode else "light"
+        st.markdown(
+            f"<div class='upload-card'><b>Odabrano fajlova:</b> {len(uploaded_files)}<br><span class='upload-muted'>Prikaz: {tone} mode</span></div>",
+            unsafe_allow_html=True,
+        )
     with col2:
         run = st.button("🔍 Ekstrahuj podatke", type="primary", use_container_width=True)
 
@@ -67,16 +67,17 @@ def render_upload() -> None:
     if not results:
         return
 
-    st.markdown("---")
-    st.subheader("📋 Pregled ekstrahiranih podataka")
-    st.caption("Po potrebi ispravi podatke prije potvrde.")
+    st.markdown("<div class='section-title'>📋 Pregled ekstrahiranih podataka</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='upload-card'>Provjeri rezultat, ispravi po potrebi i zatim potvrdi unos ili preuzmi Excel.</div>",
+        unsafe_allow_html=True,
+    )
 
     edited_rows = _render_editor(results)
-
-    st.markdown("---")
-    col_save, col_download, col_clear = st.columns(3)
-
     prepared = _rows_to_invoices(edited_rows, results)
+
+    st.markdown("<div class='section-title'>⚙️ Akcije</div>", unsafe_allow_html=True)
+    col_save, col_download, col_clear = st.columns(3)
 
     with col_save:
         if st.button("💾 Dodaj u listu", type="primary", use_container_width=True):
@@ -98,6 +99,177 @@ def render_upload() -> None:
             st.session_state[_ERRORS_KEY] = []
             st.session_state[_LAST_RUN_KEY] = None
             st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI i tema
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _init_state() -> None:
+    if "invoices" not in st.session_state:
+        st.session_state["invoices"] = []
+    if _RESULTS_KEY not in st.session_state:
+        st.session_state[_RESULTS_KEY] = []
+    if _ERRORS_KEY not in st.session_state:
+        st.session_state[_ERRORS_KEY] = []
+    if _DARK_KEY not in st.session_state:
+        st.session_state[_DARK_KEY] = True
+
+
+def _render_topbar() -> bool:
+    left, right = st.columns([3, 1])
+    with left:
+        st.markdown("## Učitavanje faktura")
+    with right:
+        dark_mode = st.toggle("Dark mode", key=_DARK_KEY)
+    return dark_mode
+
+
+def _render_hero(dark_mode: bool) -> None:
+    mode_label = "Dark mode uključen" if dark_mode else "Light mode uključen"
+    st.markdown(
+        f"""
+        <div class="hero-wrap">
+            <div class="hero-title">📤 PDF ekstrakcija računa</div>
+            <div class="hero-subtitle">Uploaduj jedan ili više PDF fajlova, pregledaj rezultat i potvrdi samo ispravne stavke.</div>
+            <div class="hero-badge">{mode_label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _apply_upload_theme(dark_mode: bool) -> None:
+    if dark_mode:
+        bg = "#0f172a"
+        card = "#111827"
+        border = "#334155"
+        text = "#f8fafc"
+        muted = "#cbd5e1"
+        input_bg = "#0b1220"
+        accent = "#38bdf8"
+        row = "#111827"
+    else:
+        bg = "#f8fafc"
+        card = "#ffffff"
+        border = "#dbe4f0"
+        text = "#0f172a"
+        muted = "#475569"
+        input_bg = "#ffffff"
+        accent = "#2563eb"
+        row = "#ffffff"
+
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: {bg};
+            color: {text};
+        }}
+        .block-container {{
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+        }}
+        h1, h2, h3, h4, h5, h6, p, label, span, div {{
+            color: {text};
+        }}
+        .hero-wrap {{
+            background: linear-gradient(135deg, {card} 0%, {bg} 100%);
+            border: 1px solid {border};
+            border-radius: 18px;
+            padding: 1.2rem 1.2rem 1rem 1.2rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.10);
+        }}
+        .hero-title {{
+            font-size: 1.55rem;
+            font-weight: 700;
+            color: {text};
+            margin-bottom: 0.35rem;
+        }}
+        .hero-subtitle {{
+            color: {muted};
+            font-size: 0.98rem;
+            margin-bottom: 0.75rem;
+        }}
+        .hero-badge {{
+            display: inline-block;
+            padding: 0.35rem 0.7rem;
+            border-radius: 999px;
+            background: {accent}22;
+            border: 1px solid {accent}55;
+            color: {text};
+            font-size: 0.86rem;
+            font-weight: 600;
+        }}
+        .upload-card {{
+            background: {card};
+            color: {text};
+            border: 1px solid {border};
+            border-radius: 14px;
+            padding: 0.9rem 1rem;
+            margin: 0.25rem 0 0.75rem 0;
+        }}
+        .upload-muted {{
+            color: {muted};
+            font-size: 0.9rem;
+        }}
+        .section-title {{
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: {text};
+        }}
+        [data-testid="stFileUploader"] > div {{
+            background: {card};
+            border: 1px solid {border};
+            border-radius: 16px;
+            padding: 0.35rem;
+        }}
+        [data-testid="stFileUploader"] small,
+        [data-testid="stFileUploader"] label,
+        [data-testid="stFileUploader"] span {{
+            color: {text} !important;
+        }}
+        [data-testid="stDataFrame"], [data-testid="stDataEditor"] {{
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid {border};
+            background: {card};
+        }}
+        [data-testid="stDataFrame"] * , [data-testid="stDataEditor"] * {{
+            color: {text} !important;
+        }}
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] > div,
+        .stTextInput > div > div,
+        .stDateInput > div > div,
+        .stNumberInput > div > div {{
+            background: {input_bg} !important;
+            color: {text} !important;
+            border-color: {border} !important;
+        }}
+        .stAlert {{
+            border-radius: 14px;
+        }}
+        [data-testid="stExpander"] {{
+            border: 1px solid {border};
+            border-radius: 14px;
+            background: {card};
+        }}
+        [data-testid="stMarkdownContainer"] p {{
+            color: {text};
+        }}
+        .stDownloadButton button,
+        .stButton button {{
+            border-radius: 12px;
+            font-weight: 600;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +319,7 @@ def _run_extraction(uploaded_files) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tabela za uređivanje
+# Editor
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_editor(invoices: list[InvoiceData]) -> list[dict]:
@@ -214,7 +386,6 @@ def _rows_to_invoices(rows: list[dict], originals: list[InvoiceData]) -> list[In
 
 def _refresh_warnings(inv: InvoiceData) -> list[str]:
     warnings: list[str] = []
-
     if not inv.BROJFAKT:
         warnings.append("BROJFAKT nije pronađen")
     if not inv.DATUMF:
@@ -223,7 +394,6 @@ def _refresh_warnings(inv: InvoiceData) -> list[str]:
         warnings.append("NAZIVPP nije pronađen")
     if not inv.IZNSAPDV:
         warnings.append("IZNSAPDV nije pronađen")
-
     return warnings
 
 
@@ -231,13 +401,14 @@ def _excel_filename() -> str:
     return f"fakture_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
 
-def _render_empty_state() -> None:
+def _render_empty_state(dark_mode: bool) -> None:
+    mode_text = "dark" if dark_mode else "light"
     st.markdown(
-        """
-        <div style="text-align:center; padding:3rem; color:#888;">
-            <div style="font-size:3rem;">📄</div>
-            <p style="font-size:1.1rem; margin-top:1rem;">Uploaduj PDF račune za ekstrakciju.</p>
-            <p style="font-size:0.9rem;">Podržani su standardni i skenirani PDF dokumenti.</p>
+        f"""
+        <div class="upload-card" style="text-align:center; padding:2rem 1rem;">
+            <div style="font-size:3rem; margin-bottom:0.5rem;">📄</div>
+            <div style="font-size:1.15rem; font-weight:700; margin-bottom:0.4rem;">Uploaduj PDF račune za ekstrakciju</div>
+            <div class="upload-muted">Aktivni prikaz: {mode_text} mode. Podržani su standardni i skenirani PDF dokumenti.</div>
         </div>
         """,
         unsafe_allow_html=True,
