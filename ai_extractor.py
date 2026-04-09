@@ -265,21 +265,51 @@ def _extract_text(pdf_bytes: bytes) -> str:
 
 
 def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
-    """Ekstrakcija teksta koristeći PyMuPDF (fitz)."""
+    """
+    Ekstrakcija teksta koristeći PyMuPDF (fitz).
+
+    Redosljed pokušaja po stranici:
+      1. get_text("text")  — brzo, čisto
+      2. get_text("html")  — za nestandardne/Type-3 fontove;
+         img tagovi (base64) se uklanjaju prije provjere
+    """
     try:
-        import fitz  # PyMuPDF
+        import fitz
         parts = []
+
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             for page in doc:
-                t = page.get_text("text")
-                if t and t.strip():
-                    parts.append(t)
+
+                # Pokušaj 1 — plain text
+                t = page.get_text("text") or ""
+                if len(re.sub(r"\s+", "", t)) > 10:
+                    parts.append(t.strip())
+                    continue
+
+                # Pokušaj 2 — HTML mod (Type-3 fontovi, nestandardni enkoding)
+                # HTML sadrži ogromne base64 img blokove — uklanjamo ih
+                html = page.get_text("html") or ""
+                if html:
+                    # Ukloni <img ...> tagove (base64 podaci, mogu biti MB veliki)
+                    html = re.sub(r"<img[^>]*>", "", html, flags=re.IGNORECASE)
+                    # Ukloni sve preostale HTML tagove
+                    html = re.sub(r"<[^>]+>", " ", html)
+                    # Dekodiraj HTML entitete
+                    html = (html
+                            .replace("&amp;", "&").replace("&lt;", "<")
+                            .replace("&gt;", ">").replace("&nbsp;", " ")
+                            .replace("&#39;", "'").replace("&quot;", '"'))
+                    # Normalizuj razmake
+                    html = re.sub(r"\s+", " ", html).strip()
+
+                    if len(re.sub(r"\s+", "", html)) > 10:
+                        parts.append(html)
+
         return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
     except ImportError:
         return ""
     except Exception:
         return ""
-
 
 def _extract_text_pdfplumber(pdf_bytes: bytes) -> str:
     """Ekstrakcija teksta koristeći pdfplumber."""
