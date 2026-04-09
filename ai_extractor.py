@@ -42,6 +42,7 @@ _MAX_IMG_HEIGHT = 8000
 _MAX_IMG_WIDTH  = 3000
 _DPI            = 200
 _JPEG_QUALITY   = 92
+_VISION_BATCH   = 4   # max stranica po jednom GPT Vision pozivu
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +470,9 @@ def extract_invoices_from_pdf(
     - Tekstualni PDF (ima OCR sloj) → tekst → GPT-4o
     - Slikovni PDF (skeniran)       → slike → GPT-4o Vision
 
+    Za višestranične slikovne PDF-ove stranice se šalju u batch-evima
+    (_VISION_BATCH stranica po pozivu) da bi tekst ostao čitljiv za GPT.
+
     Parametri
     ---------
     pdf_bytes : sadržaj PDF fajla kao bytes
@@ -491,8 +495,52 @@ def extract_invoices_from_pdf(
     if not b64_pages:
         return [_error_invoice(filename, "PDF nema stranica")]
 
-    b64 = _combine_images(b64_pages) if len(b64_pages) > 1 else b64_pages[0]
-    return _extract_via_vision(b64, filename)
+    # Jedna stranica — direktno
+    if len(b64_pages) == 1:
+        return _extract_via_vision(b64_pages[0], filename)
+
+    # Više stranica — batch obrada
+    return _extract_via_vision_batched(b64_pages, filename)
+
+
+def _extract_via_vision_batched(
+    b64_pages: list[str],
+    filename: str,
+) -> list[InvoiceData]:
+    """
+    Obrađuje višestranični PDF u batch-evima od _VISION_BATCH stranica.
+
+    Problem koji rješava:
+      Slanje svih N stranica u jednu sliku znači da GPT Vision dobija
+      svaku stranicu u minijaturnoj rezoluciji (nečitljivo).
+      Batch obrada čuva rezoluciju i tačnost ekstrakcije.
+
+    Nakon svih poziva deduplikuje fakture po BROJFAKT.
+    """
+    all_invoices: list[InvoiceData] = []
+    total = len(b64_pages)
+
+    for start in range(0, total, _VISION_BATCH):
+        batch     = b64_pages[start : start + _VISION_BATCH]
+        end_page  = min(start + _VISION_BATCH, total)
+        label     = f"{filename} [str.{start + 1}–{end_page}/{total}]"
+
+        b64 = _combine_images(batch) if len(batch) > 1 else batch[0]
+        results = _extract_via_vision(b64, label)
+        all_invoices.extend(results)
+
+    # Deduplikacija — isti BROJFAKT može se pojaviti na granici batch-eva
+    seen: set[str] = set()
+    unique: list[InvoiceData] = []
+    for inv in all_invoices:
+        key = inv.BROJFAKT.strip()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique.append(inv)
+
+    return unique or [_error_invoice(filename, "Nema rezultata")]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
