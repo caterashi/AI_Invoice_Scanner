@@ -113,7 +113,6 @@ from sidebar import render_sidebar
 from pages.dashboard import render_dashboard
 from pages.upload import render_upload
 from pages.invoice_detail import render_invoice_detail
-from pages.settings import render_settings
 
 active = render_sidebar()
 
@@ -121,7 +120,6 @@ PAGE_MAP = {
     "dashboard":      render_dashboard,
     "upload":         render_upload,
     "invoice_detail": render_invoice_detail,
-    "settings":       render_settings,
 }
 
 render_fn = PAGE_MAP.get(active, render_dashboard)
