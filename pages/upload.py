@@ -1,201 +1,234 @@
-"""upload.py — Učitavanje faktura i AI ekstrakcija."""
-import io
-import base64
-import time
-from datetime import date
+"""
+pages/upload.py
+===============
+Stranica za upload i ekstrakciju podataka s PDF faktura.
+
+Tok:
+  1. Korisnik uploaduje jedan ili više PDF fajlova
+  2. Svaki PDF se obrađuje kroz ai_extractor.extract_invoices_from_pdf()
+  3. Rezultati se prikazuju u editabilnoj tabeli
+  4. Potvrđeni zapisi se dodaju u session_state["invoices"]
+  5. Excel download je dostupan odmah
+"""
+
+from __future__ import annotations
 
 import streamlit as st
-from PIL import Image
 
-from ai_extractor import extract_invoices_from_image, FIELDS, InvoiceData
-from excel_export import save_invoices, invoices_to_bytes
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Konverzija fajla u base64
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _file_to_base64(uploaded_file) -> str:
-    name = uploaded_file.name.lower()
-    data = uploaded_file.read()
-    uploaded_file.seek(0)
-
-    if name.endswith(".pdf"):
-        from pdf2image import convert_from_bytes
-        pages = convert_from_bytes(data, dpi=200)
-        # Spoji sve stranice vertikalno
-        max_w = max(p.width for p in pages)
-        total_h = sum(p.height for p in pages)
-        combined = Image.new("RGB", (max_w, total_h), (255, 255, 255))
-        y = 0
-        for p in pages:
-            combined.paste(p, (0, y))
-            y += p.height
-        # Resize ako je prevelika
-        if max(combined.size) > 3000:
-            combined.thumbnail((3000, 3000), Image.LANCZOS)
-        buf = io.BytesIO()
-        combined.save(buf, format="JPEG", quality=92)
-    else:
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        if max(img.size) > 2800:
-            img.thumbnail((2800, 2800), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=92)
-
-    return base64.b64encode(buf.getvalue()).decode()
+from ai_extractor import InvoiceData, FIELDS, extract_invoices_from_pdf
+from excel_export import invoices_to_bytes, HEADERS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pregled dokumenta
+# Konstante
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _preview_file(uploaded_file):
-    name = uploaded_file.name.lower()
-    uploaded_file.seek(0)
-    if name.endswith(".pdf"):
-        try:
-            from pdf2image import convert_from_bytes
-            pages = convert_from_bytes(
-                uploaded_file.read(), dpi=120, first_page=1, last_page=1
-            )
-            if pages:
-                st.image(pages[0], caption="Pregled (str. 1)", use_container_width=True)
-        except Exception:
-            st.info("PDF pregled nije dostupan.")
-    else:
-        uploaded_file.seek(0)
-        st.image(uploaded_file, caption="Pregled", use_container_width=True)
+_FIELD_LABELS = list(HEADERS.values())   # display nazivi kolona
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Glavni renderer
+# Glavna render funkcija
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_upload():
-    st.markdown("# 📤 Učitaj račun")
-    st.markdown("Dodaj jednu ili više faktura — AI će automatski izvući podatke.")
-    st.divider()
+def render_upload() -> None:
+    st.title("📤 Učitaj račune")
 
-    model = st.session_state.get("selected_model", "gpt-4o")
+    # Provjera API ključa
+    if not st.session_state.get("openai_api_key"):
+        st.warning("⚠️ OpenAI API ključ nije postavljen. Idi na **Postavke** i unesi ključ.")
+        return
 
+    # ── Upload zona ──────────────────────────────────────────────────────────
     uploaded_files = st.file_uploader(
-        "Prevuci fakture ili klikni za odabir",
-        type=["pdf", "jpg", "jpeg", "png", "webp"],
+        "Prevuci PDF fajlove ovdje ili klikni za odabir",
+        type=["pdf"],
         accept_multiple_files=True,
+        help="Podržani su tekstualni PDF-ovi (s OCR slojem) i skenirani PDF-ovi.",
     )
 
     if not uploaded_files:
+        _render_empty_state()
         return
 
-    # ── Pregled ──────────────────────────────────────────────────────────────
-    st.markdown(f"**{len(uploaded_files)} fajl(ova) odabrano**")
-    if len(uploaded_files) == 1:
-        with st.expander("👁️ Pregled dokumenta", expanded=True):
-            _preview_file(uploaded_files[0])
-    else:
-        cols = st.columns(min(len(uploaded_files), 3))
-        for i, f in enumerate(uploaded_files):
-            with cols[i % 3]:
-                ext = f.name.rsplit(".", 1)[-1].upper()
-                st.markdown(f"**{ext}** — `{f.name[:30]}`")
-
-    st.markdown("")
-    col_btn, _ = st.columns([2, 5])
-    with col_btn:
-        run = st.button(
-            "🔍 Pokreni AI ekstrakciju",
+    # ── Dugme za pokretanje ekstrakcije ──────────────────────────────────────
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.caption(f"Odabrano fajlova: **{len(uploaded_files)}**")
+    with col2:
+        extract_btn = st.button(
+            "🔍 Ekstrahuj podatke",
             type="primary",
             use_container_width=True,
         )
 
-    if not run:
+    if not extract_btn:
         return
 
-    # ── Ekstrakcija ──────────────────────────────────────────────────────────
-    bar  = st.progress(0, text="Pripremam…")
-    area = st.empty()
-    new_invoices: list[InvoiceData] = []
-    errors = 0
+    # ── Ekstrakcija ───────────────────────────────────────────────────────────
+    all_extracted: list[InvoiceData] = []
+    errors: list[str] = []
+
+    progress = st.progress(0, text="Priprema...")
 
     for idx, uf in enumerate(uploaded_files):
-        pct = int(idx / len(uploaded_files) * 100)
-        bar.progress(pct, text=f"Obrađujem {idx+1}/{len(uploaded_files)}: {uf.name}")
+        filename = uf.name
+        progress.progress(
+            (idx) / len(uploaded_files),
+            text=f"Obrađujem {filename}...",
+        )
 
-        with area.container():
-            st.info(f"⏳ AI skenira: **{uf.name}**")
-            with st.spinner("Čekam odgovor od GPT-4o…"):
-                try:
-                    b64 = _file_to_base64(uf)
-                    # Vraća LISTU — jedan fajl može imati više računa
-                    found = extract_invoices_from_image(
-                        b64, filename=uf.name, model=model
-                    )
-                    for inv in found:
-                        new_invoices.append(inv)
-                        if inv._warnings:
-                            st.warning(
-                                f"⚠️ {inv._filename}: " + "; ".join(inv._warnings)
-                            )
-                    if len(found) > 1:
-                        st.info(f"📄 {uf.name}: pronađeno **{len(found)} računa**")
+        pdf_bytes = uf.read()
 
-                except Exception as e:
-                    st.error(f"❌ Greška za {uf.name}: {e}")
-                    errors += 1
-                    time.sleep(0.5)
+        with st.spinner(f"⏳ {filename}"):
+            try:
+                results = extract_invoices_from_pdf(pdf_bytes, filename=filename)
+                for inv in results:
+                    if inv._valid:
+                        all_extracted.append(inv)
+                    else:
+                        errors.append(f"**{filename}**: {'; '.join(inv._warnings)}")
+            except Exception as e:
+                errors.append(f"**{filename}**: {e}")
 
-    bar.progress(100, text="Završeno!")
-    area.empty()
+    progress.progress(1.0, text="Gotovo!")
 
-    # ── Spremi u session_state ───────────────────────────────────────────────
-    if "invoices" not in st.session_state:
-        st.session_state["invoices"] = []
-    st.session_state["invoices"].extend(new_invoices)
+    # ── Greške ────────────────────────────────────────────────────────────────
+    if errors:
+        with st.expander(f"⚠️ Greške ({len(errors)})", expanded=True):
+            for err in errors:
+                st.error(err, icon="⚠️")
 
-    # ── Rezultati ────────────────────────────────────────────────────────────
-    n_ok   = sum(1 for inv in new_invoices if inv._valid)
-    n_warn = sum(1 for inv in new_invoices if inv._warnings and inv._valid)
-    n_err  = sum(1 for inv in new_invoices if not inv._valid)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("✅ Obrađeno", n_ok)
-    c2.metric("⚠️ Upozorenja", n_warn)
-    c3.metric("❌ Greške", n_err + errors)
-
-    if not new_invoices:
-        st.warning("Nijedan račun nije uspješno obrađen.")
+    if not all_extracted:
+        st.error("Nije pronađena nijedna faktura.")
         return
 
-    # ── Tabela ekstraktovanih podataka ───────────────────────────────────────
-    st.divider()
-    st.markdown("### 📋 Ekstraktovani podaci")
+    st.success(f"✅ Pronađeno faktura: **{len(all_extracted)}**")
 
+    # ── Prikaz i uređivanje rezultata ─────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📋 Pregled ekstrahiranih podataka")
+    st.caption("Provjeri i po potrebi ispravi podatke prije potvrde.")
+
+    edited = _render_editor(all_extracted)
+
+    # ── Upozorenja ────────────────────────────────────────────────────────────
+    warnings_count = sum(len(inv._warnings) for inv in all_extracted if inv._warnings)
+    if warnings_count:
+        with st.expander(f"⚠️ Upozorenja validacije ({warnings_count})", expanded=False):
+            for inv in all_extracted:
+                if inv._warnings:
+                    st.markdown(f"**{inv._filename or inv.BROJFAKT}**")
+                    for w in inv._warnings:
+                        st.markdown(f"- {w}")
+
+    # ── Akcije ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    col_save, col_dl, col_clear = st.columns(3)
+
+    with col_save:
+        if st.button("💾 Dodaj u listu", type="primary", use_container_width=True):
+            invoices = _rows_to_invoices(edited, all_extracted)
+            st.session_state["invoices"].extend(invoices)
+            st.success(f"Dodano {len(invoices)} faktura u listu.")
+            st.rerun()
+
+    with col_dl:
+        all_invoices = _rows_to_invoices(edited, all_extracted)
+        excel_bytes  = invoices_to_bytes(all_invoices)
+        st.download_button(
+            label="📥 Preuzmi Excel",
+            data=excel_bytes,
+            file_name=_excel_filename(all_invoices),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    with col_clear:
+        if st.button("🗑️ Poništi", use_container_width=True):
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editabilna tabela
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_editor(invoices: list[InvoiceData]) -> list[dict]:
+    """
+    Prikazuje st.data_editor s ekstrahiranim podacima.
+    Vraća listu redova (dict) nakon eventualnog uređivanja.
+    """
     import pandas as pd
+
     rows = []
-    for inv in new_invoices:
-        row = inv.to_dict()
-        row["Fajl"] = getattr(inv, "_filename", "")
+    for inv in invoices:
+        row = {HEADERS[f]: getattr(inv, f, "") for f in FIELDS}
+        # Dodaj indikator valjanosti
+        row["Status"] = "✅" if not inv._warnings else "⚠️"
         rows.append(row)
 
-    df = pd.DataFrame(rows)[["Fajl"] + FIELDS]
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    df = pd.DataFrame(rows)
 
-    # ── Excel download ───────────────────────────────────────────────────────
-    xlsx = invoices_to_bytes(new_invoices)
-    st.download_button(
-        "⬇️ Preuzmi Excel (.xlsx)",
-        data=xlsx,
-        file_name=f"fakture_{date.today().strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    edited_df = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Status": st.column_config.TextColumn("Status", width="small", disabled=True),
+            HEADERS["IZNBEZPDV"]: st.column_config.TextColumn(HEADERS["IZNBEZPDV"], width="medium"),
+            HEADERS["IZNPDV"]:    st.column_config.TextColumn(HEADERS["IZNPDV"],    width="medium"),
+            HEADERS["IZNSAPDV"]:  st.column_config.TextColumn(HEADERS["IZNSAPDV"],  width="medium"),
+            HEADERS["NAZIVPP"]:   st.column_config.TextColumn(HEADERS["NAZIVPP"],   width="large"),
+            HEADERS["SJEDISTEPP"]:st.column_config.TextColumn(HEADERS["SJEDISTEPP"],width="large"),
+        },
+        num_rows="fixed",
     )
 
-    # ── Spremi na disk ───────────────────────────────────────────────────────
-    settings   = st.session_state.get("settings", {})
-    excel_path = settings.get("excel_path", "")
-    if excel_path:
-        added, errs_list = save_invoices(new_invoices, excel_path)
-        if added:
-            st.success(f"💾 Dodano {added} faktura u: `{excel_path}`")
-        for e in errs_list:
-            st.error(e)
+    # Vrati samo FIELDS kolone (bez Status)
+    return [
+        {f: row.get(HEADERS[f], "") for f in FIELDS}
+        for _, row in edited_df.iterrows()
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pomoćne funkcije
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rows_to_invoices(
+    rows: list[dict],
+    originals: list[InvoiceData],
+) -> list[InvoiceData]:
+    """Konvertuje uredene redove nazad u InvoiceData objekte."""
+    result = []
+    for i, row in enumerate(rows):
+        inv = InvoiceData(**{f: str(row.get(f, "")) for f in FIELDS})
+        # Prenesi metapodatke iz originala ako postoji
+        if i < len(originals):
+            inv._filename = originals[i]._filename
+            inv._valid    = originals[i]._valid
+            inv._warnings = originals[i]._warnings
+        result.append(inv)
+    return result
+
+
+def _excel_filename(invoices: list[InvoiceData]) -> str:
+    """Generiše naziv Excel fajla."""
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    return f"fakture_{ts}.xlsx"
+
+
+def _render_empty_state() -> None:
+    """Prikazuje info poruku kad nema uploadovanih fajlova."""
+    st.markdown("""
+    <div style="text-align:center; padding:3rem; color:#888;">
+        <div style="font-size:3rem;">📄</div>
+        <p style="font-size:1.1rem; margin-top:1rem;">
+            Uploaduj PDF fakture da započneš ekstrakciju
+        </p>
+        <p style="font-size:0.9rem;">
+            Podržani formati: standardni računi (HERBAVITAL tip),
+            fiskalni izvještaji (EDNA-M/IBFM tip)
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
