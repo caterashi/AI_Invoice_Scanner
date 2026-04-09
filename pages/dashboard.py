@@ -1,96 +1,228 @@
-"""dashboard.py — Pregled metrike i liste faktura."""
+"""
+pages/dashboard.py
+==================
+Pregled svih faktura dodanih u session_state["invoices"].
+
+Funkcije:
+  - Prikaz svih faktura u tabeli
+  - Sumarni KPI-evi (broj faktura, ukupan iznos)
+  - Brisanje pojedinačnih redova
+  - Brisanje svih faktura
+  - Excel download
+"""
+
+from __future__ import annotations
+
+import pandas as pd
 import streamlit as st
-from helpers import format_amount
+
+from ai_extractor import FIELDS, InvoiceData
+from excel_export import HEADERS, invoices_to_bytes
 
 
-def render_dashboard():
-    st.markdown("# 📊 Pregled")
-    st.markdown("Sumarni prikaz obrađenih faktura u ovoj sesiji.")
-    st.divider()
+# ─────────────────────────────────────────────────────────────────────────────
+# Glavna render funkcija
+# ─────────────────────────────────────────────────────────────────────────────
 
-    results = st.session_state.get("results", [])
+def render_dashboard() -> None:
+    st.title("📊 Pregled faktura")
 
-    if not results:
-        st.markdown("""
-        <div style="text-align:center;padding:4rem 2rem;color:#7a7974">
-          <div style="font-size:3rem">📂</div>
-          <h3 style="color:#28251d;margin:.75rem 0 .4rem">Nema faktura</h3>
-          <p>Idi na <strong>Učitaj račun</strong> i dodaj prve fakture.</p>
-        </div>""", unsafe_allow_html=True)
+    invoices: list[InvoiceData] = st.session_state.get("invoices", [])
+
+    if not invoices:
+        _render_empty_state()
         return
 
-    # Izračun metrike
-    amounts_sa = []
-    amounts_bez = []
-    amounts_pdv = []
-    for r in results:
-        for lst, key in [(amounts_sa, "IZNSAPDV"), (amounts_bez, "IZNBEZPDV"), (amounts_pdv, "IZNPDV")]:
-            try:
-                v = r.get(key, "") or ""
-                if v:
-                    lst.append(float(v))
-            except Exception:
-                pass
+    # ── KPI metrike ───────────────────────────────────────────────────────
+    _render_metrics(invoices)
 
-    total    = len(results)
-    log      = st.session_state.get("log", [])
-    done     = sum(1 for _, s, _ in log if s == "done")
-    errors   = sum(1 for _, s, _ in log if s == "error")
+    st.markdown("---")
 
-    # Metrika kartice
-    c1, c2, c3, c4 = st.columns(4)
-    cards = [
-        (c1, "📄", "Ukupno faktura", str(total)),
-        (c2, "💰", "Ukupno s PDV", format_amount(sum(amounts_sa))),
-        (c3, "✅", "Obrađeno", str(done)),
-        (c4, "❌", "Greške", str(errors)),
-    ]
-    for col, icon, label, val in cards:
-        with col:
-            st.markdown(f"""
-            <div style="background:#f9f8f5;border:1px solid #dcd9d5;border-radius:12px;
-                        padding:1rem 1.25rem;text-align:center">
-              <div style="font-size:1.5rem">{icon}</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#01696f;line-height:1.2">{val}</div>
-              <div style="font-size:.72rem;color:#7a7974;text-transform:uppercase;
-                          letter-spacing:.05em;margin-top:.25rem">{label}</div>
-            </div>""", unsafe_allow_html=True)
+    # ── Akcijska traka ─────────────────────────────────────────────────────
+    col_dl, col_del = st.columns([1, 1])
 
-    st.markdown("")
+    with col_dl:
+        excel_bytes = invoices_to_bytes(invoices)
+        st.download_button(
+            label="📥 Preuzmi Excel",
+            data=excel_bytes,
+            file_name=_excel_filename(),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary",
+        )
 
-    # Iznosi breakdown
-    if amounts_sa:
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            st.metric("Ukupno bez PDV", format_amount(sum(amounts_bez)))
-        with b2:
-            st.metric("Ukupno PDV", format_amount(sum(amounts_pdv)))
-        with b3:
-            avg = sum(amounts_sa) / len(amounts_sa)
-            st.metric("Prosječna faktura", format_amount(avg))
+    with col_del:
+        if st.button(
+            "🗑️ Obriši sve fakture",
+            use_container_width=True,
+            type="secondary",
+        ):
+            st.session_state["_confirm_clear"] = True
 
-    st.divider()
-    st.markdown("### 📋 Lista faktura")
+    # Potvrda brisanja svih
+    if st.session_state.get("_confirm_clear"):
+        st.warning("⚠️ Jesi li siguran/na? Ova akcija je nepovratna.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ Da, obriši sve", use_container_width=True, type="primary"):
+                st.session_state["invoices"]      = []
+                st.session_state["_confirm_clear"] = False
+                st.rerun()
+        with c2:
+            if st.button("❌ Odustani", use_container_width=True):
+                st.session_state["_confirm_clear"] = False
+                st.rerun()
+        return
 
-    import pandas as pd
-    from ai_extractor import FIELDS
-    df = pd.DataFrame(results)
-    for c in FIELDS:
-        if c not in df.columns:
-            df[c] = ""
-    show_cols = ["_filename", "BROJFAKT", "DATUMF", "NAZIVPP", "IZNBEZPDV", "IZNPDV", "IZNSAPDV"]
-    for c in show_cols:
-        if c not in df.columns:
-            df[c] = ""
-    df_show = df[show_cols].rename(columns={"_filename": "Fajl"})
+    st.markdown("---")
 
-    # Klik za detalje
-    event = st.dataframe(
-        df_show, use_container_width=True, hide_index=False,
-        on_select="rerun", selection_mode="single-row",
+    # ── Tabela s fakturama ─────────────────────────────────────────────────
+    st.subheader("📋 Lista faktura")
+    _render_table(invoices)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KPI metrike
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_metrics(invoices: list[InvoiceData]) -> None:
+    """Prikazuje 4 KPI kartice na vrhu stranice."""
+
+    total_sa_pdv  = _sum_field(invoices, "IZNSAPDV")
+    total_pdv     = _sum_field(invoices, "IZNPDV")
+    total_bez_pdv = _sum_field(invoices, "IZNBEZPDV")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            label="Ukupno faktura",
+            value=len(invoices),
+        )
+    with col2:
+        st.metric(
+            label="Ukupno za naplatu",
+            value=f"{total_sa_pdv:,.2f} KM".replace(",", "X").replace(".", ",").replace("X", "."),
+        )
+    with col3:
+        st.metric(
+            label="Ukupno bez PDV-a",
+            value=f"{total_bez_pdv:,.2f} KM".replace(",", "X").replace(".", ",").replace("X", "."),
+        )
+    with col4:
+        st.metric(
+            label="Ukupno PDV",
+            value=f"{total_pdv:,.2f} KM".replace(",", "X").replace(".", ",").replace("X", "."),
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tabela s brisanjem redova
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_table(invoices: list[InvoiceData]) -> None:
+    """
+    Prikazuje tabelu faktura s mogućnošću brisanja pojedinih redova.
+    """
+    # Pripremi DataFrame
+    rows = []
+    for i, inv in enumerate(invoices):
+        row = {"#": i + 1}
+        for field in FIELDS:
+            row[HEADERS[field]] = getattr(inv, field, "")
+        row["⚠️"] = "⚠️" if inv._warnings else ""
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # Prikaži tabelu
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", width="small"),
+            HEADERS["IZNBEZPDV"]: st.column_config.NumberColumn(
+                HEADERS["IZNBEZPDV"], format="%.2f KM"
+            ),
+            HEADERS["IZNPDV"]: st.column_config.NumberColumn(
+                HEADERS["IZNPDV"], format="%.2f KM"
+            ),
+            HEADERS["IZNSAPDV"]: st.column_config.NumberColumn(
+                HEADERS["IZNSAPDV"], format="%.2f KM"
+            ),
+            "⚠️": st.column_config.TextColumn("⚠️", width="small"),
+        },
     )
-    if event and event.selection and event.selection.rows:
-        idx = event.selection.rows[0]
-        st.session_state.selected_invoice_idx = idx
-        st.session_state.active_page = "invoice_detail"
-        st.rerun()
+
+    # ── Brisanje pojedinačnog reda ─────────────────────────────────────────
+    st.markdown("#### Obriši fakturu")
+
+    col_sel, col_btn = st.columns([3, 1])
+
+    options = [
+        f"{i + 1}. {inv.BROJFAKT or '—'} | {inv.NAZIVPP or '—'} | {inv.DATUMF or '—'}"
+        for i, inv in enumerate(invoices)
+    ]
+
+    with col_sel:
+        selected = st.selectbox(
+            "Odaberi fakturu za brisanje",
+            options=options,
+            index=None,
+            placeholder="Odaberi...",
+            label_visibility="collapsed",
+        )
+
+    with col_btn:
+        if st.button("🗑️ Obriši", use_container_width=True, disabled=selected is None):
+            idx = options.index(selected)
+            st.session_state["invoices"].pop(idx)
+            st.success(f"Faktura obrisana.")
+            st.rerun()
+
+    # ── Upozorenja validacije ─────────────────────────────────────────────
+    warnings = [(inv, inv._warnings) for inv in invoices if inv._warnings]
+    if warnings:
+        with st.expander(f"⚠️ Upozorenja validacije ({len(warnings)} faktura)", expanded=False):
+            for inv, w_list in warnings:
+                label = inv.BROJFAKT or inv.NAZIVPP or inv._filename or "Nepoznato"
+                st.markdown(f"**{label}**")
+                for w in w_list:
+                    st.markdown(f"- {w}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pomoćne funkcije
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sum_field(invoices: list[InvoiceData], field: str) -> float:
+    """Sabira numeričke vrijednosti jednog polja svih faktura."""
+    total = 0.0
+    for inv in invoices:
+        try:
+            total += float(getattr(inv, field, "") or 0)
+        except (ValueError, TypeError):
+            pass
+    return total
+
+
+def _excel_filename() -> str:
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    return f"fakture_{ts}.xlsx"
+
+
+def _render_empty_state() -> None:
+    st.markdown("""
+    <div style="text-align:center; padding:4rem; color:#888;">
+        <div style="font-size:3rem;">📭</div>
+        <p style="font-size:1.1rem; margin-top:1rem;">
+            Nema faktura u listi
+        </p>
+        <p style="font-size:0.9rem;">
+            Idi na <b>Učitaj račune</b> i uploaduj PDF fakture.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
