@@ -37,6 +37,8 @@ for _key, _val in _DEFAULTS.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
 
+st.session_state["app_dark_mode"] = True
+
 from sidebar import render_sidebar  # noqa: E402
 from pages.upload import render_upload  # noqa: E402
 from pages.dashboard import render_dashboard  # noqa: E402
