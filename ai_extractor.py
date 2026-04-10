@@ -22,7 +22,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, PrivateAttr
 from PIL import Image
 from pdf2image import convert_from_bytes
 
@@ -64,11 +64,51 @@ class InvoiceData(BaseModel):
     IZNSAPDV: str = Field(default='')
     IZNPDV: str = Field(default='')
 
-    _filename: str = ''
-    _valid: bool = True
-    _warnings: list[str] = []
-    _source_text: str = ''
-    _page_span: str = ''
+    _filename: str = PrivateAttr(default='')
+    _valid: bool = PrivateAttr(default=True)
+    _warnings: list[str] = PrivateAttr(default_factory=list)
+    _source_text: str = PrivateAttr(default='')
+    _page_span: str = PrivateAttr(default='')
+
+    @property
+    def filename(self) -> str:
+        return self._filename
+
+    @filename.setter
+    def filename(self, value: str) -> None:
+        self._filename = str(value or '')
+
+    @property
+    def valid(self) -> bool:
+        return self._valid
+
+    @valid.setter
+    def valid(self, value: bool) -> None:
+        self._valid = bool(value)
+
+    @property
+    def warnings(self) -> list[str]:
+        return self._warnings
+
+    @warnings.setter
+    def warnings(self, value: list[str]) -> None:
+        self._warnings = list(value or [])
+
+    @property
+    def source_text(self) -> str:
+        return self._source_text
+
+    @source_text.setter
+    def source_text(self, value: str) -> None:
+        self._source_text = str(value or '')
+
+    @property
+    def page_span(self) -> str:
+        return self._page_span
+
+    @page_span.setter
+    def page_span(self, value: str) -> None:
+        self._page_span = str(value or '')
 
     @field_validator('BROJFAKT')
     @classmethod
@@ -78,7 +118,7 @@ class InvoiceData(BaseModel):
             return ''
         s = s.replace(' ', '') if len(s) <= 24 else s
         digits = re.sub(r'\D', '', s)
-        m = re.search(r'(\d{3,6})[\/-](20\d{2})', s)
+        m = re.search(r'(\d{3,6})[/-](20\d{2})', s)
         if m:
             return f'{m.group(1)}/{m.group(2)}'
         if re.fullmatch(r'\d{7,10}', digits) and len(digits) >= 8 and digits[-4:].startswith('20'):
@@ -251,8 +291,8 @@ def _is_text_pdf(text: str) -> bool:
 def _find_invoice_number(text: str) -> str:
     t = re.sub(r'\s+', ' ', text or '')
     patterns = [
-        r'(?:RAČUN|RACUN|FAKTURA|OTPREMNICA|RAČUN\s*-\s*OTPREMNICA|RACUN\s*-\s*OTPREMNICA)[^\d]{0,35}(?:broj|br\.?|no\.?|#)?[^\d]{0,10}(\d{3,6}[\/-]20\d{2})',
-        r'(?:broj|br\.?|no\.?|#)[^\d]{0,10}(\d{3,6}[\/-]20\d{2})',
+        r'(?:RAČUN|RACUN|FAKTURA|OTPREMNICA|RAČUN\s*-\s*OTPREMNICA|RACUN\s*-\s*OTPREMNICA)[^\d]{0,35}(?:broj|br\.?|no\.?|#)?[^\d]{0,10}(\d{3,6}[/-]20\d{2})',
+        r'(?:broj|br\.?|no\.?|#)[^\d]{0,10}(\d{3,6}[/-]20\d{2})',
         r'(?:RAČUN|RACUN|FAKTURA|OTPREMNICA)[^\d]{0,35}(\d{7,10})',
         r'(?:broj|br\.?|no\.?|#)[^\d]{0,10}(\d{7,10})',
     ]
