@@ -8,8 +8,6 @@ from __future__ import annotations
 import streamlit as st
 
 
-_THEME_KEY = "app_dark_mode"
-
 _PAGES = [
     {"key": "upload", "label": "📤 Učitaj račune", "desc": "Upload i ekstrakcija PDF faktura"},
     {"key": "pregled", "label": "📊 Pregled", "desc": "Pregled svih unesenih faktura"},
@@ -17,9 +15,7 @@ _PAGES = [
 
 
 def render_sidebar() -> str:
-    _init_theme_state()
-    dark_mode = st.session_state[_THEME_KEY]
-    _apply_sidebar_theme(dark_mode)
+    _apply_sidebar_theme()
 
     with st.sidebar:
         st.markdown(
@@ -35,15 +31,14 @@ def render_sidebar() -> str:
 
         st.markdown("<div class='sb-section'>Navigacija</div>", unsafe_allow_html=True)
 
-        if "active_page" not in st.session_state:
-            st.session_state["active_page"] = "upload"
+        active_page = st.session_state.setdefault("active_page", "upload")
 
         for page in _PAGES:
-            is_active = st.session_state["active_page"] == page["key"]
+            is_active = active_page == page["key"]
             if st.button(
                 page["label"],
                 key=f"nav_{page['key']}",
-                use_container_width=True,
+                width="stretch",
                 type="primary" if is_active else "secondary",
                 help=page["desc"],
             ):
@@ -75,25 +70,13 @@ def render_sidebar() -> str:
     return st.session_state["active_page"]
 
 
-def _init_theme_state() -> None:
-    st.session_state[_THEME_KEY] = True
-
-
-def _apply_sidebar_theme(dark_mode: bool) -> None:
-    if dark_mode:
-        bg = "#0f172a"
-        card = "#111827"
-        border = "#334155"
-        text = "#f8fafc"
-        muted = "#cbd5e1"
-        accent = "#38bdf8"
-    else:
-        bg = "#f8fafc"
-        card = "#ffffff"
-        border = "#dbe4f0"
-        text = "#0f172a"
-        muted = "#475569"
-        accent = "#2563eb"
+def _apply_sidebar_theme() -> None:
+    bg = "#0f172a"
+    card = "#111827"
+    border = "#334155"
+    text = "#f8fafc"
+    muted = "#cbd5e1"
+    accent = "#38bdf8"
 
     st.markdown(
         f"""
@@ -106,8 +89,8 @@ def _apply_sidebar_theme(dark_mode: bool) -> None:
             color: {text};
         }}
         .sb-brand {{
-            text-align:center;
-            padding: 0.6rem 0 1rem 0;
+            text-align: center;
+            padding: 0.6rem 0 1rem;
             margin-bottom: 0.6rem;
             border-bottom: 1px solid {border};
         }}
@@ -134,14 +117,6 @@ def _apply_sidebar_theme(dark_mode: bool) -> None:
             color: {muted};
             font-weight: 700;
         }}
-        .sb-note {{
-            background: {card};
-            border: 1px solid {border};
-            border-radius: 12px;
-            padding: 0.65rem 0.8rem;
-            margin: 0.35rem 0 0.7rem 0;
-            color: {text};
-        }}
         .sb-card {{
             background: linear-gradient(135deg, {card} 0%, {bg} 100%);
             border: 1px solid {border};
@@ -163,11 +138,10 @@ def _apply_sidebar_theme(dark_mode: bool) -> None:
             margin-top: 1rem;
             color: {muted};
             font-size: 0.78rem;
-            text-align:center;
+            text-align: center;
             padding-top: 0.8rem;
             border-top: 1px solid {border};
         }}
-        section[data-testid="stSidebar"] .stToggle label,
         section[data-testid="stSidebar"] .stButton button,
         section[data-testid="stSidebar"] .stMarkdown p,
         section[data-testid="stSidebar"] .stCaption {{
