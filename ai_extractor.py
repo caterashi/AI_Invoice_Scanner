@@ -1,7 +1,7 @@
 """
 ai_extractor.py
 ===============
-Ekstrakcija podataka iz PDF faktura pomoću GPT modela.
+V2
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from PIL import Image
 from pdf2image import convert_from_bytes
 
 try:
-    import fitz  # PyMuPDF
+    import fitz
 except Exception:
     fitz = None
 
@@ -50,7 +50,6 @@ _DPI = 200
 _JPEG_QUALITY = 92
 _MAX_IMG_HEIGHT = 8000
 _MAX_IMG_WIDTH = 3000
-_VISION_BATCH = 4
 
 
 class InvoiceData(BaseModel):
@@ -77,13 +76,14 @@ class InvoiceData(BaseModel):
         s = re.sub(r"\s+", " ", str(v or "")).strip()
         if not s:
             return ""
+        s = s.replace(" ", "") if len(s) <= 24 else s
         digits = re.sub(r"\D", "", s)
-        if re.fullmatch(r"\d{8}", digits) and digits[-4:].startswith("20"):
-            return f"{digits[:-4]}/{digits[-4:]}"
-        m = re.search(r"(\d{3,6})\s*/\s*(20\d{2})", s)
+        m = re.search(r"(\d{3,6})[\/-](20\d{2})", s)
         if m:
             return f"{m.group(1)}/{m.group(2)}"
-        return s
+        if re.fullmatch(r"\d{7,10}", digits) and len(digits) >= 8 and digits[-4:].startswith("20"):
+            return f"{digits[:-4]}/{digits[-4:]}"
+        return re.sub(r"\s+", "", s)
 
     @field_validator("DATUMF", "DATUMPF")
     @classmethod
@@ -155,55 +155,41 @@ Ti si ekspert za ekstrakciju podataka sa faktura i računa iz Bosne i Hercegovin
 Tvoj zadatak je da iz dokumenta izvučeš podatke i vratiš ISKLJUČIVO validan JSON array.
 Ne piši objašnjenja, uvod, napomene ni markdown osim čistog JSON-a.
 
-PDF može sadržavati jedan ili više dokumenata. Za SVAKI dokument vrati jedan JSON objekt.
+Dokument može sadržavati jedan račun, više različitih računa, više dobavljača, račune različite strukture i višestrane račune.
+Za SVAKI račun vrati jedan JSON objekt.
 Ako neko polje ne postoji ili nije jasno vidljivo, upiši prazan string "".
 
 Ključevi MORAJU biti TAČNO ovi:
-
 {
-  "BROJFAKT": "Broj računa/fakture (npr. 432/10, 9034508513, 600398-1-0126-1)",
+  "BROJFAKT": "Broj računa/fakture",
   "DATUMF": "Datum izdavanja fakture (format DD.MM.GGGG)",
-  "DATUMPF": "Datum prijema fakture — ako postoji poseban datum prijema/evidentiranja, upiši ga (format DD.MM.GGGG). Ako ne postoji, ostavi prazan string",
-  "NAZIVPP": "Puni naziv DOBAVLJAČA — firma KOJA JE IZDALA račun (čiji je logo/zaglavlje). To je firma koja ŠALJE račun, NE firma koja ga prima!",
+  "DATUMPF": "Datum prijema fakture ili prazan string",
+  "NAZIVPP": "Puni naziv dobavljača / izdavaoca računa",
   "SJEDISTEPP": "Puna adresa dobavljača sa poštanskim brojem i mjestom",
-  "IDPDVPP": "ID broj (JIB) dobavljača - MORA biti TAČNO 13 cifara i počinjati sa 4. Ako na računu vidiš broj koji nema 13 cifara ili ne počinje sa 4, dodaj vodeću 4 da bude 13 cifara",
-  "JIBPUPP": "PDV broj dobavljača - MORA biti TAČNO 12 cifara. To je isti broj kao ID/JIB ali BEZ vodeće cifre 4. Ako dobavljač NIJE u PDV sistemu (nema PDV broj na računu), ostavi prazan string",
-  "IZNBEZPDV": "Iznos BEZ PDV-a (decimalni separator tačka, npr. 155.87)",
-  "IZNSAPDV": "UKUPAN iznos za uplatu SA PDV-om (npr. 182.37)",
-  "IZNPDV": "Iznos PDV-a u KM (NE procenat, nego koliko PDV iznosi u novcu, npr. 26.50)"
+  "IDPDVPP": "ID/JIB dobavljača, 13 cifara i počinje sa 4",
+  "JIBPUPP": "PDV broj dobavljača, 12 cifara, bez vodeće 4",
+  "IZNBEZPDV": "Iznos bez PDV-a, decimalna tačka",
+  "IZNSAPDV": "Ukupan iznos sa PDV-om, decimalna tačka",
+  "IZNPDV": "Iznos PDV-a u novcu, decimalna tačka"
 }
 
 Pravila:
-- Čitaj ISKLJUČIVO ono što je eksplicitno vidljivo u dokumentu ili tekstu.
-- NE izmišljaj podatke.
-- NE koristi naziv fajla kao izvor podataka.
-- Ako postoji više iznosa ili više stopa PDV-a, vrati ukupni zbir za taj račun.
-- Iznose vrati samo kao broj, bez valute, sa decimalnom tačkom.
-- DATUMF i DATUMPF vrati u formatu DD.MM.GGGG ako su vidljivi.
-- DOBAVLJAČ je izdavalac računa; kupca, primaoca, mjesto isporuke i adresu kupca ignoriši.
-- NAZIVPP, SJEDISTEPP, IDPDVPP i JIBPUPP uzimaj ISKLJUČIVO iz zaglavlja izdavaoca, pored loga/naziva firme i registracionih podataka.
-- Nikada ne uzimaj naziv, adresu, ID ili PDV broj kupca za polja dobavljača.
-- Ako je prisutan samo jedan identifikacioni broj dobavljača, popuni IDPDVPP po pravilu 13 cifara; JIBPUPP popuni samo ako je na dokumentu jasno naveden PDV/PIB broj ili se pouzdano može dobiti skidanjem vodeće cifre 4 iz istog ID broja dobavljača.
-- Za DATUMF koristi samo datum označen kao Datum računa / Datum fakture / Datum izdavanja. Ne koristi datum isporuke kao DATUMF.
-- Za DATUMPF koristi samo poseban datum prijema/evidentiranja ako je jasno odvojen od DATUMF; inače vrati "".
-
-Logika po dokumentu:
-1. Prvo pronađi BROJFAKT.
-2. Zatim sve ostale podatke traži samo unutar istog bloka tog računa.
-3. IZNBEZPDV, IZNPDV i IZNSAPDV uzimaj isključivo iz završnog total bloka tog istog računa: "Ukupno bez PDV-a", "Ukupno PDV", "UKUPAN IZNOS ZA NAPLATU".
-4. Ako nova strana počne sa drugim "RAČUN - OTPREMNICA broj" ili drugim brojem računa, to je novi račun i totals se ne smiju miješati.
-5. Ako se isti BROJFAKT pojavljuje na više strana, to je JEDAN račun. Spoji te strane u jedan rezultat i uzmi završne totale sa zadnje strane istog računa.
-6. Ako isti dobavljač očigledno izdaje sve račune u PDF-u, polja NAZIVPP, SJEDISTEPP, IDPDVPP i JIBPUPP moraju ostati dosljedna kroz sve rezultate.
-
-Kontrolne provjere:
-- Ako više različitih računa imaju identične iznose, provjeri da li si slučajno preuzeo totals sa susjednog računa.
-- Ako se NAZIVPP ponavlja, a SJEDISTEPP ili identifikacioni brojevi se mijenjaju između računa u istom PDF-u, vjerovatno si uzeo podatke kupca umjesto dobavljača.
-- Ako IZNBEZPDV + IZNPDV nije približno jednako IZNSAPDV, potraži drugi total blok za isti račun.
+- Čitaj samo ono što je vidljivo u dokumentu.
+- Ne koristi naziv fajla kao izvor podataka.
+- Dobavljač je izdavalac računa, ne kupac.
+- Ne pretpostavljaj da svi računi u PDF-u imaju istog dobavljača.
+- Za svaki račun posebno odredi dobavljača iz njegovog zaglavlja ili bloka izdavaoca.
+- DATUMF uzmi samo sa oznaka kao što su Datum računa, Datum fakture, Datum izdavanja.
+- DATUMPF upiši samo ako postoji poseban datum prijema/evidentiranja; inače "".
+- IZNBEZPDV, IZNPDV i IZNSAPDV uzimaj iz total bloka istog računa.
+- Ako je ovo nastavak prethodne strane istog računa, koristi isti BROJFAKT samo ako je to jasno vidljivo ili jasno proizlazi iz kontinuiteta istog računa.
+- Ako nisi siguran da li podatak pripada dobavljaču ili kupcu, ostavi polje prazno.
 """
 
 
 def _active_model(default: str = "gpt-4o") -> str:
     return st.session_state.get("selected_model", default)
+
 
 
 def _get_api_key() -> str:
@@ -218,6 +204,7 @@ def _get_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "")
 
 
+
 def _get_client() -> OpenAI:
     api_key = _get_api_key()
     if not api_key:
@@ -225,46 +212,155 @@ def _get_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
+
+def _extract_text_pages_pymupdf(pdf_bytes: bytes) -> list[str]:
     if fitz is None:
-        return ""
+        return []
     try:
-        out: list[str] = []
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        for page in doc:
-            out.append(page.get_text("text") or "")
-        return "\n".join(out)
+        return [(page.get_text("text") or "").strip() for page in doc]
     except Exception:
-        return ""
+        return []
 
 
-def _extract_text_pdfplumber(pdf_bytes: bytes) -> str:
+
+def _extract_text_pages_pdfplumber(pdf_bytes: bytes) -> list[str]:
     if pdfplumber is None:
-        return ""
+        return []
     try:
         out: list[str] = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                out.append(page.extract_text() or "")
-        return "\n".join(out)
+                out.append((page.extract_text() or "").strip())
+        return out
     except Exception:
-        return ""
+        return []
+
+
+
+def _extract_text_pages(pdf_bytes: bytes) -> list[str]:
+    a = _extract_text_pages_pymupdf(pdf_bytes)
+    b = _extract_text_pages_pdfplumber(pdf_bytes)
+    score_a = sum(len(re.sub(r"\s+", "", x)) for x in a)
+    score_b = sum(len(re.sub(r"\s+", "", x)) for x in b)
+    pages = a if score_a >= score_b else b
+    return [re.sub(r"\s+", " ", p).strip() for p in pages]
+
 
 
 def _extract_text(pdf_bytes: bytes) -> str:
-    t1 = _extract_text_pymupdf(pdf_bytes)
-    t2 = _extract_text_pdfplumber(pdf_bytes)
-    text = t1 if len(re.sub(r"\s+", "", t1)) >= len(re.sub(r"\s+", "", t2)) else t2
-    return re.sub(r"\s+", " ", text).strip()
+    return "\n".join(_extract_text_pages(pdf_bytes)).strip()
+
 
 
 def _is_text_pdf(text: str) -> bool:
     return len(re.sub(r"\s+", "", text or "")) >= _MIN_TEXT_CHARS
 
 
+
+def _find_invoice_number(text: str) -> str:
+    t = re.sub(r"\s+", " ", text or "")
+    patterns = [
+        r"(?:RAČUN|RACUN|FAKTURA|OTPREMNICA|RAČUN\s*-\s*OTPREMNICA|RACUN\s*-\s*OTPREMNICA)[^\d]{0,35}(?:broj|br\.?|no\.?|#)?[^\d]{0,10}(\d{3,6}[\/-]20\d{2})",
+        r"(?:broj|br\.?|no\.?|#)[^\d]{0,10}(\d{3,6}[\/-]20\d{2})",
+        r"(?:RAČUN|RACUN|FAKTURA|OTPREMNICA)[^\d]{0,35}(\d{7,10})",
+        r"(?:broj|br\.?|no\.?|#)[^\d]{0,10}(\d{7,10})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, t, flags=re.IGNORECASE)
+        if m:
+            return InvoiceData.normalize_bill_number(m.group(1))
+    return ""
+
+
+
+def _looks_like_continuation_without_number(text: str) -> bool:
+    t = (text or "").lower()
+    continuation_markers = [
+        "ukupno bez pdv",
+        "ukupno pdv",
+        "ukupan iznos za naplatu",
+        "slovima",
+        "rok pla",
+        "broj otpremnice",
+        "strana 2",
+        "strana 3",
+        "red. broj",
+        "iznos bez pdv",
+    ]
+    score = sum(1 for m in continuation_markers if m in t)
+    return score >= 2
+
+
+
+def _has_new_invoice_signal(text: str) -> bool:
+    t = re.sub(r"\s+", " ", text or "")
+    if _find_invoice_number(t):
+        return True
+    signals = [
+        r"(?:ra[čc]un|faktura|otpremnica)\s*[-–]?\s*(?:otpremnica)?",
+        r"(?:datum\s+ra[čc]una|datum\s+fakture|datum\s+izdavanja)",
+    ]
+    return any(re.search(p, t, flags=re.IGNORECASE) for p in signals)
+
+
+
+def _segment_text_pages(page_texts: list[str]) -> list[dict]:
+    segments: list[dict] = []
+    current_pages: list[str] = []
+    current_numbers: list[str] = []
+    current_page_ids: list[int] = []
+
+    for idx, page in enumerate(page_texts, start=1):
+        number = _find_invoice_number(page)
+        is_cont = _looks_like_continuation_without_number(page)
+        has_new = _has_new_invoice_signal(page)
+
+        if not current_pages:
+            current_pages = [page]
+            current_page_ids = [idx]
+            if number:
+                current_numbers = [number]
+            continue
+
+        active_number = current_numbers[-1] if current_numbers else ""
+
+        should_split = False
+        if number and active_number and number != active_number:
+            should_split = True
+        elif number and not active_number and not is_cont:
+            should_split = True
+        elif has_new and not is_cont and active_number and number and number != active_number:
+            should_split = True
+
+        if should_split:
+            segments.append({
+                "number": active_number,
+                "text": "\n\n".join(current_pages).strip(),
+                "pages": current_page_ids[:],
+            })
+            current_pages = [page]
+            current_page_ids = [idx]
+            current_numbers = [number] if number else []
+        else:
+            current_pages.append(page)
+            current_page_ids.append(idx)
+            if number:
+                current_numbers.append(number)
+
+    if current_pages:
+        segments.append({
+            "number": current_numbers[-1] if current_numbers else "",
+            "text": "\n\n".join(current_pages).strip(),
+            "pages": current_page_ids[:],
+        })
+    return segments
+
+
+
 def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
     pages = convert_from_bytes(pdf_bytes, dpi=_DPI, fmt="jpeg")
-    result: list[str] = []
+    out: list[str] = []
     for img in pages:
         img = img.convert("RGB")
         w, h = img.size
@@ -273,67 +369,49 @@ def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
             img = img.resize((int(w * ratio), int(h * ratio)))
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
-        result.append(base64.b64encode(buf.getvalue()).decode())
-    return result
+        out.append(base64.b64encode(buf.getvalue()).decode())
+    return out
 
 
-def _combine_images(b64_pages: list[str]) -> str:
-    images = [Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB") for x in b64_pages]
-    width = max(img.width for img in images)
-    height = sum(img.height for img in images)
-    canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
-    y = 0
-    for img in images:
-        canvas.paste(img, (0, y))
-        y += img.height
-    if canvas.height > _MAX_IMG_HEIGHT:
-        ratio = _MAX_IMG_HEIGHT / canvas.height
-        canvas = canvas.resize((int(canvas.width * ratio), _MAX_IMG_HEIGHT))
-    if canvas.width > _MAX_IMG_WIDTH:
-        ratio = _MAX_IMG_WIDTH / canvas.width
-        canvas = canvas.resize((_MAX_IMG_WIDTH, int(canvas.height * ratio)))
-    buf = io.BytesIO()
-    canvas.save(buf, format="JPEG", quality=_JPEG_QUALITY)
-    return base64.b64encode(buf.getvalue()).decode()
 
-
-def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
+def _extract_via_text_segment(text: str, filename: str, label: str = "") -> list[InvoiceData]:
     client = _get_client()
     model = _active_model()
     try:
         resp = client.chat.completions.create(
             model=model,
             temperature=0,
-            max_tokens=4096,
+            max_tokens=2200,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
-                        f"Fajl: {filename}\n\n"
-                        "Ispod je tekst iz PDF dokumenta. Koristi ISKLJUČIVO podatke koji se vide u tekstu. "
-                        "NE izmišljaj i NE koristi naziv fajla kao izvor podataka. "
-                        "Dobavljač se uzima samo iz zaglavlja izdavaoca; kupca ignoriši. "
-                        "Totals veži samo za isti broj računa, a isti broj računa na više strana spoji u jedan rezultat. "
-                        "Vrati JSON array za sve pronađene dokumente.\n\n"
+                        f"Fajl: {filename}\n"
+                        f"Segment: {label or 'tekst'}\n\n"
+                        "Ovo je jedan segment PDF-a. "
+                        "Vrati samo račune vidljive u ovom segmentu. "
+                        "Ako segment izgleda kao nastavak istog računa na narednoj strani, zadrži isti BROJFAKT samo ako je broj vidljiv ili je kontinuitet total bloka očigledan. "
+                        "Ne pretpostavljaj da drugi segmenti imaju istog dobavljača.\n\n"
                         f"TEKST DOKUMENTA:\n{text}"
                     ),
                 },
             ],
         )
-        return _parse_response(resp.choices[0].message.content.strip(), filename)
+        return _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
     except Exception as e:
         return [_error_invoice(filename, str(e))]
 
 
-def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
+
+def _extract_via_vision_segment(b64_image: str, filename: str, label: str = "") -> list[InvoiceData]:
     client = _get_client()
     model = _active_model()
     try:
         resp = client.chat.completions.create(
             model=model,
             temperature=0,
-            max_tokens=4096,
+            max_tokens=2200,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
@@ -342,12 +420,12 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
                         {
                             "type": "text",
                             "text": (
-                                f"Fajl: {filename}\n\n"
-                                "Prouči sliku dokumenta i vrati JSON array za sve pronađene dokumente. "
-                                "Koristi ISKLJUČIVO ono što se vidi na slici. "
-                                "Dobavljač se uzima samo iz zaglavlja izdavaoca; kupca ignoriši. "
-                                "Totals veži samo za isti broj računa, a isti broj računa na više strana spoji u jedan rezultat. "
-                                "NE koristi naziv fajla kao izvor podataka."
+                                f"Fajl: {filename}\n"
+                                f"Segment: {label or 'slika'}\n\n"
+                                "Ovo je jedna stranica ili mali segment PDF-a. "
+                                "Vrati samo račune vidljive u ovom segmentu. "
+                                "Ako se vidi samo nastavak total bloka bez novog broja računa, tretiraj ga kao mogući nastavak prethodnog računa i vrati samo jasno vidljive podatke. "
+                                "Ne pretpostavljaj istog dobavljača za druge segmente."
                             ),
                         },
                         {
@@ -358,120 +436,246 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
                 },
             ],
         )
-        return _parse_response(resp.choices[0].message.content.strip(), filename)
+        return _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
     except Exception as e:
         return [_error_invoice(filename, str(e))]
 
 
-def _extract_via_vision_batched(b64_pages: list[str], filename: str) -> list[InvoiceData]:
-    all_items: list[InvoiceData] = []
-    total = len(b64_pages)
-    for start in range(0, total, _VISION_BATCH):
-        batch = b64_pages[start:start + _VISION_BATCH]
-        end = min(start + _VISION_BATCH, total)
-        label = f"{filename} [str.{start + 1}-{end}/{total}]"
-        image = _combine_images(batch) if len(batch) > 1 else batch[0]
-        all_items.extend(_extract_via_vision(image, label))
-    merged = _merge_duplicate_invoices(all_items)
-    return merged or [_error_invoice(filename, "Nema rezultata")]
-
 
 def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[InvoiceData]:
-    text = _extract_text(pdf_bytes)
-    if _is_text_pdf(text):
-        return _extract_via_text(text, filename)
+    page_texts = _extract_text_pages(pdf_bytes)
+    full_text = "\n".join(page_texts).strip()
 
-    try:
-        pages = _pdf_to_b64_images(pdf_bytes)
-    except Exception as e:
-        return [_error_invoice(filename, f"Greška pri konverziji PDF→slika: {e}")]
+    if _is_text_pdf(full_text):
+        segments = _segment_text_pages(page_texts) if page_texts else []
+        if not segments:
+            return _extract_via_text_segment(full_text, filename)
+        items: list[InvoiceData] = []
+        for seg in segments:
+            label = f"[str.{seg['pages'][0]}-{seg['pages'][-1]}]"
+            items.extend(_extract_via_text_segment(seg["text"], filename, label))
+        return _merge_duplicate_invoices(items)
 
+    pages = _pdf_to_b64_images(pdf_bytes)
     if not pages:
         return [_error_invoice(filename, "PDF nema stranica")]
-    if len(pages) == 1:
-        return _extract_via_vision(pages[0], filename)
-    return _extract_via_vision_batched(pages, filename)
+
+    items: list[InvoiceData] = []
+    for i, page in enumerate(pages, start=1):
+        items.extend(_extract_via_vision_segment(page, filename, f"[str.{i}]"))
+    return _merge_duplicate_invoices(items)
+
+
+
+def _supplier_key(inv: InvoiceData) -> str:
+    parts = []
+    if inv.NAZIVPP:
+        parts.append(re.sub(r"\s+", " ", inv.NAZIVPP).strip().lower())
+    if inv.IDPDVPP:
+        parts.append(re.sub(r"\D", "", inv.IDPDVPP))
+    if inv.JIBPUPP:
+        parts.append(re.sub(r"\D", "", inv.JIBPUPP))
+    return "|".join([p for p in parts if p])
+
+
+
+def _invoice_strength(inv: InvoiceData) -> int:
+    score = 0
+    for f in FIELDS:
+        if getattr(inv, f, ""):
+            score += 1
+    if inv.BROJFAKT:
+        score += 3
+    if inv.IZNSAPDV:
+        score += 2
+    if inv.NAZIVPP:
+        score += 2
+    return score
+
+
+
+def _is_probable_continuation(a: InvoiceData, b: InvoiceData) -> bool:
+    if a.BROJFAKT and not b.BROJFAKT and b.IZNSAPDV:
+        if a.NAZIVPP and b.NAZIVPP and a.NAZIVPP != b.NAZIVPP:
+            return False
+        if a.DATUMF and b.DATUMF and a.DATUMF != b.DATUMF:
+            return False
+        return True
+    if b.BROJFAKT and not a.BROJFAKT and a.IZNSAPDV:
+        if a.NAZIVPP and b.NAZIVPP and a.NAZIVPP != b.NAZIVPP:
+            return False
+        if a.DATUMF and b.DATUMF and a.DATUMF != b.DATUMF:
+            return False
+        return True
+    return False
+
+
+
+def _compatible_for_merge(a: InvoiceData, b: InvoiceData) -> bool:
+    if _is_probable_continuation(a, b):
+        return True
+
+    a_num = (a.BROJFAKT or "").strip()
+    b_num = (b.BROJFAKT or "").strip()
+    if a_num and b_num and a_num != b_num:
+        return False
+
+    a_sup = _supplier_key(a)
+    b_sup = _supplier_key(b)
+    if a_sup and b_sup and a_sup != b_sup:
+        return False
+
+    if a.DATUMF and b.DATUMF and a.DATUMF != b.DATUMF:
+        return False
+
+    if a.IZNSAPDV and b.IZNSAPDV:
+        try:
+            diff = abs(float(a.IZNSAPDV) - float(b.IZNSAPDV))
+            if diff > 0.06:
+                if a_num and b_num and a_num == b_num:
+                    return False
+                if a.IZNBEZPDV and b.IZNBEZPDV:
+                    if abs(float(a.IZNBEZPDV) - float(b.IZNBEZPDV)) > 0.06:
+                        return False
+        except Exception:
+            pass
+
+    if a_num and b_num and a_num == b_num:
+        return True
+
+    overlap = 0
+    if a.NAZIVPP and b.NAZIVPP and a.NAZIVPP == b.NAZIVPP:
+        overlap += 1
+    if a.DATUMF and b.DATUMF and a.DATUMF == b.DATUMF:
+        overlap += 1
+    if a.IDPDVPP and b.IDPDVPP and a.IDPDVPP == b.IDPDVPP:
+        overlap += 1
+    if a.JIBPUPP and b.JIBPUPP and a.JIBPUPP == b.JIBPUPP:
+        overlap += 1
+    return overlap >= 3
+
 
 
 def _merge_duplicate_invoices(items: list[InvoiceData]) -> list[InvoiceData]:
-    merged_by_number: dict[str, InvoiceData] = {}
-    remainder: list[InvoiceData] = []
-    for inv in items:
-        broj = (inv.BROJFAKT or "").strip()
-        if not broj:
-            remainder.append(inv)
-            continue
-        if broj not in merged_by_number:
-            merged_by_number[broj] = inv
-            continue
-        merged_by_number[broj] = _merge_invoice_pair(merged_by_number[broj], inv)
-    ordered = list(merged_by_number.values())
-    ordered.extend(remainder)
-    return _harmonize_supplier_fields(ordered)
+    clean = [x for x in items if any(getattr(x, f, "") for f in FIELDS) or x._warnings]
+    groups: list[list[InvoiceData]] = []
+
+    for inv in clean:
+        placed = False
+        candidate_idx = None
+        candidate_score = -1
+        for idx, group in enumerate(groups):
+            if _compatible_for_merge(group[0], inv):
+                score = _invoice_strength(group[0])
+                if score > candidate_score:
+                    candidate_score = score
+                    candidate_idx = idx
+        if candidate_idx is not None:
+            groups[candidate_idx].append(inv)
+            placed = True
+        if not placed:
+            groups.append([inv])
+
+    merged = [_merge_invoice_group(g) for g in groups]
+    merged = _inherit_missing_invoice_numbers(merged)
+    merged.sort(key=lambda x: ((x.DATUMF or "9999.99.99"), (x.BROJFAKT or "ZZZZ")))
+    return merged or [_error_invoice("", "Nema rezultata")]
 
 
-def _merge_invoice_pair(a: InvoiceData, b: InvoiceData) -> InvoiceData:
+
+def _inherit_missing_invoice_numbers(items: list[InvoiceData]) -> list[InvoiceData]:
+    if len(items) < 2:
+        return items
+    for i in range(1, len(items)):
+        prev = items[i - 1]
+        cur = items[i]
+        if not cur.BROJFAKT and prev.BROJFAKT and cur.IZNSAPDV:
+            if _is_probable_continuation(prev, cur):
+                cur.BROJFAKT = prev.BROJFAKT
+                cur._warnings = _validate(cur)
+                cur._valid = len(cur._warnings) == 0
+    return items
+
+
+
+def _merge_invoice_group(group: list[InvoiceData]) -> InvoiceData:
+    if len(group) == 1:
+        inv = group[0]
+        inv._warnings = _validate(inv)
+        inv._valid = len(inv._warnings) == 0
+        return inv
+
     merged = InvoiceData()
     text_fields = ["BROJFAKT", "DATUMF", "DATUMPF", "NAZIVPP", "SJEDISTEPP", "IDPDVPP", "JIBPUPP"]
     amount_fields = ["IZNBEZPDV", "IZNSAPDV", "IZNPDV"]
 
     for field in text_fields:
-        setattr(merged, field, _prefer_text_value(getattr(a, field, "") or "", getattr(b, field, "") or ""))
+        values = [getattr(x, field, "") or "" for x in group]
+        setattr(merged, field, _best_text(values))
     for field in amount_fields:
-        setattr(merged, field, _prefer_amount_value(getattr(a, field, "") or "", getattr(b, field, "") or ""))
+        values = [getattr(x, field, "") or "" for x in group]
+        setattr(merged, field, _best_amount(values))
 
-    merged._filename = a._filename or b._filename
-    merged._warnings = list(dict.fromkeys((a._warnings or []) + (b._warnings or [])))
+    merged._filename = group[0]._filename
+    merged._warnings = []
+    for x in group:
+        merged._warnings.extend(x._warnings or [])
     merged._warnings = list(dict.fromkeys(merged._warnings + _validate(merged)))
     merged._valid = len(merged._warnings) == 0
     return merged
 
 
-def _prefer_text_value(a: str, b: str) -> str:
-    a = (a or "").strip()
-    b = (b or "").strip()
-    if a and not b:
-        return a
-    if b and not a:
-        return b
-    if not a and not b:
+
+def _best_text(values: list[str]) -> str:
+    vals = [re.sub(r"\s+", " ", v).strip() for v in values if str(v or "").strip()]
+    if not vals:
         return ""
-    a_digits = len(re.sub(r"\D", "", a))
-    b_digits = len(re.sub(r"\D", "", b))
-    if a_digits != b_digits and max(a_digits, b_digits) >= 8:
-        return a if a_digits > b_digits else b
-    return a if len(a) >= len(b) else b
+    counts: dict[str, int] = {}
+    for v in vals:
+        counts[v] = counts.get(v, 0) + 1
+    best_count = max(counts.values())
+    candidates = [v for v, c in counts.items() if c == best_count]
+    if len(candidates) == 1:
+        return candidates[0]
+    candidates.sort(key=lambda x: (len(re.sub(r"\D", "", x)), len(x)), reverse=True)
+    return candidates[0]
 
 
-def _prefer_amount_value(a: str, b: str) -> str:
-    a = (a or "").strip()
-    b = (b or "").strip()
-    if a and not b:
-        return a
-    if b and not a:
-        return b
-    if not a and not b:
+
+def _best_amount(values: list[str]) -> str:
+    vals = [str(v or "").strip() for v in values if str(v or "").strip()]
+    if not vals:
         return ""
-    try:
-        return f"{max(float(a), float(b)):.2f}"
-    except Exception:
-        return a if len(a) >= len(b) else b
+    numeric: dict[str, int] = {}
+    parsed: dict[str, float] = {}
+    for v in vals:
+        try:
+            vv = f"{float(v):.2f}"
+            numeric[vv] = numeric.get(vv, 0) + 1
+            parsed[vv] = float(vv)
+        except Exception:
+            pass
+    if numeric:
+        best_count = max(numeric.values())
+        candidates = [k for k, c in numeric.items() if c == best_count]
+        candidates.sort(key=lambda x: parsed[x], reverse=True)
+        return candidates[0]
+    vals.sort(key=len, reverse=True)
+    return vals[0]
+
 
 
 def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
     if not raw:
         return [_error_invoice(filename, "Prazan odgovor modela")]
-
     raw = raw.strip()
     m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
     if m:
         raw = m.group(1).strip()
-
     if raw.startswith("Na osnovu") or raw.startswith("Evo"):
         m2 = re.search(r"(\[[\s\S]+\]|\{[\s\S]+\})", raw)
         if m2:
             raw = m2.group(1).strip()
-
     try:
         data = json.loads(raw)
     except Exception:
@@ -482,7 +686,6 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
             data = json.loads(m3.group(1))
         except Exception:
             return [_error_invoice(filename, f"JSON parse greška: {raw[:300]}")]
-
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list) or not data:
@@ -501,75 +704,12 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
             results.append(inv)
         except Exception as e:
             results.append(_error_invoice(filename, str(e)))
-
-    results = _harmonize_supplier_fields(results)
     return results or [_error_invoice(filename, "Nema rezultata")]
 
-
-def _harmonize_supplier_fields(items: list[InvoiceData]) -> list[InvoiceData]:
-    if len(items) < 2:
-        return items
-
-    valid = [x for x in items if any([x.NAZIVPP, x.SJEDISTEPP, x.IDPDVPP, x.JIBPUPP])]
-    if len(valid) < 2:
-        return items
-
-    def norm(s: str) -> str:
-        return re.sub(r"\s+", " ", (s or "")).strip().lower()
-
-    supplier_name_counts: dict[str, int] = {}
-    for inv in valid:
-        name = norm(inv.NAZIVPP)
-        if name:
-            supplier_name_counts[name] = supplier_name_counts.get(name, 0) + 1
-
-    if not supplier_name_counts:
-        return items
-
-    top_name, top_name_count = max(supplier_name_counts.items(), key=lambda kv: kv[1])
-    if top_name_count < max(2, int(len(valid) * 0.6)):
-        return items
-
-    same_name = [x for x in valid if norm(x.NAZIVPP) == top_name or not norm(x.NAZIVPP)]
-
-    def most_common(values: list[str]) -> str:
-        counts: dict[str, int] = {}
-        original: dict[str, str] = {}
-        for v in values:
-            vv = (v or "").strip()
-            if not vv:
-                continue
-            k = norm(vv)
-            counts[k] = counts.get(k, 0) + 1
-            original.setdefault(k, vv)
-        if not counts:
-            return ""
-        k = max(counts.items(), key=lambda kv: kv[1])[0]
-        return original[k]
-
-    canonical_name = most_common([x.NAZIVPP for x in same_name])
-    canonical_addr = most_common([x.SJEDISTEPP for x in same_name])
-    canonical_id = most_common([x.IDPDVPP for x in same_name])
-    canonical_pdv = most_common([x.JIBPUPP for x in same_name])
-
-    for inv in items:
-        if norm(inv.NAZIVPP) == top_name or not norm(inv.NAZIVPP):
-            if canonical_name:
-                inv.NAZIVPP = canonical_name
-            if canonical_addr:
-                inv.SJEDISTEPP = canonical_addr
-            if canonical_id:
-                inv.IDPDVPP = canonical_id
-            if canonical_pdv:
-                inv.JIBPUPP = canonical_pdv
-            inv._warnings = _validate(inv)
-            inv._valid = len(inv._warnings) == 0
-    return items
 
 
 def _validate(inv: InvoiceData) -> list[str]:
     warnings: list[str] = []
-
     if not inv.BROJFAKT:
         warnings.append("BROJFAKT nije pronađen")
     if not inv.DATUMF:
@@ -583,12 +723,10 @@ def _validate(inv: InvoiceData) -> list[str]:
         digits = re.sub(r"\D", "", inv.IDPDVPP)
         if len(digits) != 13 or not digits.startswith("4"):
             warnings.append(f"IDPDVPP nije validan: {inv.IDPDVPP}")
-
     if inv.JIBPUPP:
         digits = re.sub(r"\D", "", inv.JIBPUPP)
         if len(digits) != 12:
             warnings.append(f"JIBPUPP nije validan: {inv.JIBPUPP}")
-
     try:
         if inv.IDPDVPP and inv.JIBPUPP:
             id_d = re.sub(r"\D", "", inv.IDPDVPP)
@@ -597,7 +735,6 @@ def _validate(inv: InvoiceData) -> list[str]:
                 warnings.append("IDPDVPP i JIBPUPP nisu međusobno usklađeni")
     except Exception:
         pass
-
     try:
         if inv.IZNBEZPDV and inv.IZNPDV and inv.IZNSAPDV:
             bez = float(inv.IZNBEZPDV)
@@ -607,8 +744,8 @@ def _validate(inv: InvoiceData) -> list[str]:
                 warnings.append(f"Iznosi nisu usklađeni: {bez:.2f} + {pdv:.2f} != {sa:.2f}")
     except Exception:
         warnings.append("Jedan ili više iznosa nisu numerički")
-
     return warnings
+
 
 
 def _error_invoice(filename: str, msg: str) -> InvoiceData:
@@ -619,5 +756,7 @@ def _error_invoice(filename: str, msg: str) -> InvoiceData:
     return inv
 
 
+
 def get_available_models() -> list[str]:
     return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
