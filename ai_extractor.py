@@ -3,7 +3,6 @@ ai_extractor.py
 ===============
 V4:
 - podrška za tekstualne i skenirane PDF-ove,
-- ne pretpostavlja istog dobavljača za cijeli PDF,
 - fallback za nastavke bez vidljivog BROJFAKT,
 - deduplikacija po BROJFAKT uz scoring najboljeg reda,
 - stroži header parser za gornji blok stranice/segmenta,
@@ -588,49 +587,6 @@ def _compatible_for_merge(a: InvoiceData, b: InvoiceData) -> bool:
     return overlap >= 3
 
 
-def _triplet_score(inv: InvoiceData, totals: list[float]) -> tuple:
-    try:
-        bez = float(inv.IZNBEZPDV or 0)
-    except Exception:
-        bez = 0.0
-    try:
-        sa = float(inv.IZNSAPDV or 0)
-    except Exception:
-        sa = 0.0
-    try:
-        pdv = float(inv.IZNPDV or 0)
-    except Exception:
-        pdv = 0.0
-    positives = sorted([x for x in totals if x > 0])
-    median = positives[len(positives)//2] if positives else 0.0
-    outlier = 1 if median > 0 and sa > median * 5 else 0
-    zero_all = 1 if sa == 0 and bez == 0 and pdv == 0 else 0
-    return (
-        -outlier,
-        1 if _amounts_consistent(inv) else 0,
-        -zero_all,
-        1 if sa > 0 else 0,
-        1 if bez > 0 else 0,
-        1 if pdv > 0 else 0,
-        -abs((bez + pdv) - sa) if sa or bez or pdv else -999999,
-        sa,
-    )
-
-
-def _pick_best_amount_triplet(group: list[InvoiceData]) -> tuple[str, str, str]:
-    totals = []
-    for x in group:
-        try:
-            totals.append(float(x.IZNSAPDV or 0))
-        except Exception:
-            pass
-    candidates = [x for x in group if any([x.IZNBEZPDV, x.IZNSAPDV, x.IZNPDV])]
-    if not candidates:
-        return '', '', ''
-    best = sorted(candidates, key=lambda inv: _triplet_score(inv, totals), reverse=True)[0]
-    return best.IZNBEZPDV or '', best.IZNSAPDV or '', best.IZNPDV or ''
-
-
 def _merge_invoice_group(group: list[InvoiceData]) -> InvoiceData:
     if len(group) == 1:
         inv = group[0]
@@ -639,11 +595,21 @@ def _merge_invoice_group(group: list[InvoiceData]) -> InvoiceData:
         return inv
     merged = InvoiceData()
     text_fields = ['BROJFAKT', 'DATUMF', 'DATUMPF', 'NAZIVPP', 'SJEDISTEPP', 'IDPDVPP', 'JIBPUPP']
+    amount_fields = ['IZNBEZPDV', 'IZNSAPDV', 'IZNPDV']
     for field in text_fields:
         vals = [getattr(x, field, '') or '' for x in group]
         nonempty = [re.sub(r'\s+', ' ', v).strip() for v in vals if str(v).strip()]
         setattr(merged, field, max(nonempty, key=len) if nonempty else '')
-    merged.IZNBEZPDV, merged.IZNSAPDV, merged.IZNPDV = _pick_best_amount_triplet(group)
+    for field in amount_fields:
+        vals = [getattr(x, field, '') or '' for x in group if getattr(x, field, '')]
+        if vals:
+            try:
+                chosen = max([f'{float(v):.2f}' for v in vals], key=float)
+            except Exception:
+                chosen = max(vals, key=len)
+        else:
+            chosen = ''
+        setattr(merged, field, chosen)
     merged._filename = group[0]._filename
     merged._source_text = '\n\n'.join([x._source_text for x in group if x._source_text])
     merged._page_span = ', '.join([x._page_span for x in group if x._page_span])
@@ -704,9 +670,25 @@ def _is_total_outlier(inv: InvoiceData, group: list[InvoiceData]) -> bool:
     return base > 0 and total > base * 5
 
 
+def _document_median_total(items: list[InvoiceData]) -> float:
+    vals = []
+    for inv in items:
+        try:
+            v = float(inv.IZNSAPDV or 0)
+            if v > 0:
+                vals.append(v)
+        except Exception:
+            pass
+    if not vals:
+        return 0.0
+    vals.sort()
+    return vals[len(vals)//2]
+
+
 def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
     by_num = {}
     no_num = []
+    doc_median = _document_median_total(items)
     for inv in items:
         broj = (inv.BROJFAKT or '').strip()
         if broj:
@@ -745,8 +727,11 @@ def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
             pdv_ok = 1 if re.fullmatch(r'\d{12}', re.sub(r'\D', '', inv.JIBPUPP or '')) else 0
             outlier_penalty = -100 if _is_total_outlier(inv, group) else 0
             zero_penalty = -150 if positive_exists and total == 0 and bez == 0 and pdv == 0 else 0
+            doc_outlier_penalty = 0
+            if doc_median > 0 and total > max(doc_median * 20, 10000):
+                doc_outlier_penalty = -300
             return (
-                _invoice_strength(inv) + outlier_penalty + zero_penalty,
+                _invoice_strength(inv) + outlier_penalty + zero_penalty + doc_outlier_penalty,
                 1 if _amounts_consistent(inv) else 0,
                 1 if total > 0 else 0,
                 1 if bez > 0 else 0,
@@ -755,6 +740,7 @@ def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
                 pdv_ok,
                 1 if inv.NAZIVPP else 0,
                 1 if inv.SJEDISTEPP else 0,
+                -1 if (doc_median > 0 and total > max(doc_median * 20, 10000)) else 0,
                 total,
             )
         best = sorted(group, key=score, reverse=True)[0]
@@ -807,21 +793,18 @@ def _majority_fix_supplier_ids(items: list[InvoiceData]) -> list[InvoiceData]:
         if counts:
             best_pair, best_count = sorted(counts.items(), key=lambda kv: (kv[1], kv[0][0], kv[0][1]), reverse=True)[0]
             if best_count >= 2:
-                dominant[key] = (best_pair, best_count, counts)
+                dominant[key] = best_pair
 
     for inv in items:
         key = _normalize_supplier_name(inv.NAZIVPP)
         if key not in dominant:
             continue
-        (best_id, best_pdv), best_count, counts = dominant[key]
+        best_id, best_pdv = dominant[key]
         cur_id = re.sub(r'\D', '', inv.IDPDVPP or '')
         cur_pdv = re.sub(r'\D', '', inv.JIBPUPP or '')
-        cur_pair = (cur_id, cur_pdv)
-        cur_count = counts.get(cur_pair, 0)
         valid_pair = bool(re.fullmatch(r'4\d{12}', cur_id) and re.fullmatch(r'\d{12}', cur_pdv) and cur_id[1:] == cur_pdv)
         same_or_close = (_digit_distance(cur_id, best_id) <= 2) or (_digit_distance(cur_pdv, best_pdv) <= 2)
-        isolated_valid_outlier = valid_pair and cur_pair != (best_id, best_pdv) and cur_count <= 1 and best_count >= 3
-        if (not valid_pair) or same_or_close or isolated_valid_outlier:
+        if (not valid_pair) or same_or_close:
             inv.IDPDVPP = best_id
             inv.JIBPUPP = best_pdv
             inv._warnings = _validate(inv)
