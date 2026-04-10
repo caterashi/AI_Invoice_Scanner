@@ -670,25 +670,9 @@ def _is_total_outlier(inv: InvoiceData, group: list[InvoiceData]) -> bool:
     return base > 0 and total > base * 5
 
 
-def _document_median_total(items: list[InvoiceData]) -> float:
-    vals = []
-    for inv in items:
-        try:
-            v = float(inv.IZNSAPDV or 0)
-            if v > 0:
-                vals.append(v)
-        except Exception:
-            pass
-    if not vals:
-        return 0.0
-    vals.sort()
-    return vals[len(vals)//2]
-
-
 def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
     by_num = {}
     no_num = []
-    doc_median = _document_median_total(items)
     for inv in items:
         broj = (inv.BROJFAKT or '').strip()
         if broj:
@@ -727,11 +711,8 @@ def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
             pdv_ok = 1 if re.fullmatch(r'\d{12}', re.sub(r'\D', '', inv.JIBPUPP or '')) else 0
             outlier_penalty = -100 if _is_total_outlier(inv, group) else 0
             zero_penalty = -150 if positive_exists and total == 0 and bez == 0 and pdv == 0 else 0
-            doc_outlier_penalty = 0
-            if doc_median > 0 and total > max(doc_median * 20, 10000):
-                doc_outlier_penalty = -300
             return (
-                _invoice_strength(inv) + outlier_penalty + zero_penalty + doc_outlier_penalty,
+                _invoice_strength(inv) + outlier_penalty + zero_penalty,
                 1 if _amounts_consistent(inv) else 0,
                 1 if total > 0 else 0,
                 1 if bez > 0 else 0,
@@ -740,7 +721,6 @@ def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
                 pdv_ok,
                 1 if inv.NAZIVPP else 0,
                 1 if inv.SJEDISTEPP else 0,
-                -1 if (doc_median > 0 and total > max(doc_median * 20, 10000)) else 0,
                 total,
             )
         best = sorted(group, key=score, reverse=True)[0]
