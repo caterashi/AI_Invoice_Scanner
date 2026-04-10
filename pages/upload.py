@@ -1,4 +1,4 @@
-"""
+""""
 pages/upload.py
 ===============
 """
@@ -18,7 +18,7 @@ _EDITOR_KEY = "upload_editor"
 _RESULTS_KEY = "upload_results"
 _ERRORS_KEY = "upload_errors"
 _LAST_RUN_KEY = "upload_last_run"
-_DARK_KEY = "upload_dark_mode"
+_DARK_KEY = "app_dark_mode"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,8 +27,9 @@ _DARK_KEY = "upload_dark_mode"
 
 def render_upload() -> None:
     _init_state()
-    dark_mode = _render_topbar()
+    dark_mode = _force_dark_mode()
     _apply_upload_theme(dark_mode)
+    _render_topbar()
     _render_hero(dark_mode)
 
     uploaded_files = st.file_uploader(
@@ -44,9 +45,8 @@ def render_upload() -> None:
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        tone = "dark" if dark_mode else "light"
         st.markdown(
-            f"<div class='upload-card'><b>Odabrano fajlova:</b> {len(uploaded_files)}<br><span class='upload-muted'>Prikaz: {tone} mode</span></div>",
+            f"<div class='upload-card'><b>Odabrano fajlova:</b> {len(uploaded_files)}</div>",
             unsafe_allow_html=True,
         )
     with col2:
@@ -115,13 +115,13 @@ def _init_state() -> None:
         st.session_state[_DARK_KEY] = True
 
 
-def _render_topbar() -> bool:
-    left, right = st.columns([3, 1])
-    with left:
-        st.markdown("## Učitavanje faktura")
-    with right:
-        dark_mode = st.toggle("Dark mode", key=_DARK_KEY)
-    return dark_mode
+def _force_dark_mode() -> bool:
+    st.session_state[_DARK_KEY] = True
+    return True
+
+
+def _render_topbar() -> None:
+    st.markdown("## Učitavanje faktura")
 
 
 def _render_hero(dark_mode: bool) -> None:
