@@ -396,21 +396,8 @@ def _extract_via_vision_batched(b64_pages: list[str], filename: str) -> list[Inv
         image = _combine_images(batch) if len(batch) > 1 else batch[0]
         all_items.extend(_extract_via_vision(image, label))
 
-    unique: list[InvoiceData] = []
-    seen: set[tuple[str, str, str]] = set()
-    for inv in all_items:
-        key = (
-            inv.BROJFAKT.strip(),
-            inv.DATUMF.strip(),
-            inv.IZNSAPDV.strip(),
-        )
-        if any(key) and key in seen:
-            continue
-        if any(key):
-            seen.add(key)
-        unique.append(inv)
-
-    return unique or [_error_invoice(filename, "Nema rezultata")]
+    merged = _merge_duplicate_invoices(all_items)
+    return merged or [_error_invoice(filename, "Nema rezultata")]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,6 +421,104 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[Invo
         return _extract_via_vision(pages[0], filename)
 
     return _extract_via_vision_batched(pages, filename)
+
+
+def _merge_duplicate_invoices(items: list[InvoiceData]) -> list[InvoiceData]:
+    """
+    Spaja duplikate kada je isti račun rasut preko više batch-eva / stranica.
+    Primarni ključ spajanja je BROJFAKT.
+    Ako BROJFAKT nedostaje, zadržava stavku bez spajanja.
+    """
+    merged_by_number: dict[str, InvoiceData] = {}
+    remainder: list[InvoiceData] = []
+
+    for inv in items:
+        broj = (inv.BROJFAKT or "").strip()
+        if not broj:
+            remainder.append(inv)
+            continue
+
+        if broj not in merged_by_number:
+            merged_by_number[broj] = inv
+            continue
+
+        merged_by_number[broj] = _merge_invoice_pair(merged_by_number[broj], inv)
+
+    ordered: list[InvoiceData] = list(merged_by_number.values())
+    ordered.extend(remainder)
+    return ordered
+
+
+def _merge_invoice_pair(a: InvoiceData, b: InvoiceData) -> InvoiceData:
+    """
+    Spaja dva rezultata za isti BROJFAKT i zadržava informativniju vrijednost.
+    Pravila:
+    - zadrži neprazno polje
+    - ako su oba neprazna, zadrži dužu tekstualnu vrijednost
+    - za iznose zadrži veći broj (ukupni račun je informativniji od parcijalnog)
+    - spoji upozorenja bez duplikata
+    """
+    merged = InvoiceData()
+
+    text_fields = ["BROJFAKT", "DATUMF", "DATUMPF", "NAZIVPP", "SJEDISTEPP", "IDPDVPP", "JIBPUPP"]
+    amount_fields = ["IZNBEZPDV", "IZNSAPDV", "IZNPDV"]
+
+    for field in text_fields:
+        av = getattr(a, field, "") or ""
+        bv = getattr(b, field, "") or ""
+        chosen = _prefer_text_value(av, bv)
+        setattr(merged, field, chosen)
+
+    for field in amount_fields:
+        av = getattr(a, field, "") or ""
+        bv = getattr(b, field, "") or ""
+        chosen = _prefer_amount_value(av, bv)
+        setattr(merged, field, chosen)
+
+    merged._filename = a._filename or b._filename
+    merged._warnings = list(dict.fromkeys((a._warnings or []) + (b._warnings or [])))
+    merged._valid = len(merged._warnings) == 0
+
+    refreshed = _validate(merged)
+    merged._warnings = list(dict.fromkeys(merged._warnings + refreshed))
+    merged._valid = len(merged._warnings) == 0
+    return merged
+
+
+def _prefer_text_value(a: str, b: str) -> str:
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if a and not b:
+        return a
+    if b and not a:
+        return b
+    if not a and not b:
+        return ""
+
+    a_digits = len(re.sub(r"\D", "", a))
+    b_digits = len(re.sub(r"\D", "", b))
+    if a_digits != b_digits and max(a_digits, b_digits) >= 8:
+        return a if a_digits > b_digits else b
+
+    return a if len(a) >= len(b) else b
+
+
+def _prefer_amount_value(a: str, b: str) -> str:
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if a and not b:
+        return a
+    if b and not a:
+        return b
+    if not a and not b:
+        return ""
+
+    try:
+        af = float(a)
+        bf = float(b)
+        return f"{max(af, bf):.2f}"
+    except Exception:
+        return a if len(a) >= len(b) else b
 
 
 # ─────────────────────────────────────────────────────────────────────────────
