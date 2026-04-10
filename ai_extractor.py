@@ -1,7 +1,12 @@
 """
 ai_extractor.py
 ===============
-V2
+
+V3:
+- podrška za tekstualne i skenirane PDF-ove,
+- fallback za višestrane račune kada nastavak nema vidljiv BROJFAKT,
+- deduplikacija po BROJFAKT uz scoring najboljeg reda,
+- prioritet header podacima dobavljača kada se mogu prepoznati iz teksta stranice/segmenta.
 """
 
 from __future__ import annotations
@@ -69,6 +74,8 @@ class InvoiceData(BaseModel):
     _filename: str = ""
     _valid: bool = True
     _warnings: list[str] = []
+    _source_text: str = ""
+    _page_span: str = ""
 
     @field_validator("BROJFAKT")
     @classmethod
@@ -191,7 +198,6 @@ def _active_model(default: str = "gpt-4o") -> str:
     return st.session_state.get("selected_model", default)
 
 
-
 def _get_api_key() -> str:
     key = st.session_state.get("openai_api_key", "")
     if key:
@@ -204,13 +210,11 @@ def _get_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "")
 
 
-
 def _get_client() -> OpenAI:
     api_key = _get_api_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY nije postavljen")
     return OpenAI(api_key=api_key)
-
 
 
 def _extract_text_pages_pymupdf(pdf_bytes: bytes) -> list[str]:
@@ -221,7 +225,6 @@ def _extract_text_pages_pymupdf(pdf_bytes: bytes) -> list[str]:
         return [(page.get_text("text") or "").strip() for page in doc]
     except Exception:
         return []
-
 
 
 def _extract_text_pages_pdfplumber(pdf_bytes: bytes) -> list[str]:
@@ -237,7 +240,6 @@ def _extract_text_pages_pdfplumber(pdf_bytes: bytes) -> list[str]:
         return []
 
 
-
 def _extract_text_pages(pdf_bytes: bytes) -> list[str]:
     a = _extract_text_pages_pymupdf(pdf_bytes)
     b = _extract_text_pages_pdfplumber(pdf_bytes)
@@ -247,15 +249,8 @@ def _extract_text_pages(pdf_bytes: bytes) -> list[str]:
     return [re.sub(r"\s+", " ", p).strip() for p in pages]
 
 
-
-def _extract_text(pdf_bytes: bytes) -> str:
-    return "\n".join(_extract_text_pages(pdf_bytes)).strip()
-
-
-
 def _is_text_pdf(text: str) -> bool:
     return len(re.sub(r"\s+", "", text or "")) >= _MIN_TEXT_CHARS
-
 
 
 def _find_invoice_number(text: str) -> str:
@@ -271,7 +266,6 @@ def _find_invoice_number(text: str) -> str:
         if m:
             return InvoiceData.normalize_bill_number(m.group(1))
     return ""
-
 
 
 def _looks_like_continuation_without_number(text: str) -> bool:
@@ -292,7 +286,6 @@ def _looks_like_continuation_without_number(text: str) -> bool:
     return score >= 2
 
 
-
 def _has_new_invoice_signal(text: str) -> bool:
     t = re.sub(r"\s+", " ", text or "")
     if _find_invoice_number(t):
@@ -302,7 +295,6 @@ def _has_new_invoice_signal(text: str) -> bool:
         r"(?:datum\s+ra[čc]una|datum\s+fakture|datum\s+izdavanja)",
     ]
     return any(re.search(p, t, flags=re.IGNORECASE) for p in signals)
-
 
 
 def _segment_text_pages(page_texts: list[str]) -> list[dict]:
@@ -324,7 +316,6 @@ def _segment_text_pages(page_texts: list[str]) -> list[dict]:
             continue
 
         active_number = current_numbers[-1] if current_numbers else ""
-
         should_split = False
         if number and active_number and number != active_number:
             should_split = True
@@ -357,7 +348,6 @@ def _segment_text_pages(page_texts: list[str]) -> list[dict]:
     return segments
 
 
-
 def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
     pages = convert_from_bytes(pdf_bytes, dpi=_DPI, fmt="jpeg")
     out: list[str] = []
@@ -372,6 +362,65 @@ def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
         out.append(base64.b64encode(buf.getvalue()).decode())
     return out
 
+
+def _extract_header_supplier_from_text(text: str) -> dict[str, str]:
+    t = text or ""
+    lines = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"\n+", t) if re.sub(r"\s+", " ", x).strip()]
+    if not lines:
+        lines = re.split(r" (?=[A-ZČĆŽŠĐ])", re.sub(r"\s+", " ", t))
+        lines = [x.strip() for x in lines if x.strip()]
+
+    supplier_name = ""
+    supplier_addr = ""
+    supplier_id = ""
+    supplier_pdv = ""
+
+    id_match = re.search(r"ID\s+broj(?:\s+PU)?\s*[:]?\s*(\d{12,13})", t, flags=re.IGNORECASE)
+    pdv_match = re.search(r"PDV\s+broj\s*[:]?\s*(\d{11,12,13})", t, flags=re.IGNORECASE)
+    if id_match:
+        supplier_id = InvoiceData.normalize_idpdvpp(id_match.group(1))
+    if pdv_match:
+        supplier_pdv = InvoiceData.normalize_jibpupp(pdv_match.group(1))
+
+    if supplier_id:
+        idx = t.lower().find(id_match.group(0).lower()) if id_match else -1
+        head = t[:idx] if idx > 0 else t[:600]
+        head_lines = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"\n+", head) if re.sub(r"\s+", " ", x).strip()]
+        for i, line in enumerate(head_lines[:12]):
+            if any(k in line.lower() for k in ["d.o.o", "doo", "d.d", "ltd", "apoteka", "ljekarna", "ordinacija", "trgov", "pharma", "med", "herbavital"]):
+                supplier_name = line
+                if i + 1 < len(head_lines):
+                    addr_candidate = head_lines[i + 1]
+                    if re.search(r"\b\d{5}\b", addr_candidate):
+                        supplier_addr = addr_candidate
+                break
+
+    if not supplier_addr:
+        addr_match = re.search(r"([A-ZČĆŽŠĐa-zčćžšđ0-9\.\-/ ]+,\s*\d{5}\s+[A-ZČĆŽŠĐa-zčćžšđ ]+)", t)
+        if addr_match:
+            supplier_addr = re.sub(r"\s+", " ", addr_match.group(1)).strip()
+
+    return {
+        "NAZIVPP": supplier_name,
+        "SJEDISTEPP": supplier_addr,
+        "IDPDVPP": supplier_id,
+        "JIBPUPP": supplier_pdv,
+    }
+
+
+def _apply_header_priority(inv: InvoiceData, source_text: str) -> InvoiceData:
+    header = _extract_header_supplier_from_text(source_text)
+    if header.get("NAZIVPP"):
+        inv.NAZIVPP = header["NAZIVPP"]
+    if header.get("SJEDISTEPP"):
+        inv.SJEDISTEPP = header["SJEDISTEPP"]
+    if header.get("IDPDVPP"):
+        inv.IDPDVPP = header["IDPDVPP"]
+    if header.get("JIBPUPP"):
+        inv.JIBPUPP = header["JIBPUPP"]
+    inv._warnings = _validate(inv)
+    inv._valid = len(inv._warnings) == 0
+    return inv
 
 
 def _extract_via_text_segment(text: str, filename: str, label: str = "") -> list[InvoiceData]:
@@ -398,10 +447,14 @@ def _extract_via_text_segment(text: str, filename: str, label: str = "") -> list
                 },
             ],
         )
-        return _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
+        items = _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
+        for inv in items:
+            inv._source_text = text
+            inv._page_span = label
+            _apply_header_priority(inv, text)
+        return items
     except Exception as e:
         return [_error_invoice(filename, str(e))]
-
 
 
 def _extract_via_vision_segment(b64_image: str, filename: str, label: str = "") -> list[InvoiceData]:
@@ -436,10 +489,12 @@ def _extract_via_vision_segment(b64_image: str, filename: str, label: str = "") 
                 },
             ],
         )
-        return _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
+        items = _parse_response(resp.choices[0].message.content.strip(), f"{filename}{' ' + label if label else ''}")
+        for inv in items:
+            inv._page_span = label
+        return items
     except Exception as e:
         return [_error_invoice(filename, str(e))]
-
 
 
 def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[InvoiceData]:
@@ -449,12 +504,12 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[Invo
     if _is_text_pdf(full_text):
         segments = _segment_text_pages(page_texts) if page_texts else []
         if not segments:
-            return _extract_via_text_segment(full_text, filename)
+            return _finalize_results(_extract_via_text_segment(full_text, filename))
         items: list[InvoiceData] = []
         for seg in segments:
             label = f"[str.{seg['pages'][0]}-{seg['pages'][-1]}]"
             items.extend(_extract_via_text_segment(seg["text"], filename, label))
-        return _merge_duplicate_invoices(items)
+        return _finalize_results(items)
 
     pages = _pdf_to_b64_images(pdf_bytes)
     if not pages:
@@ -463,8 +518,7 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[Invo
     items: list[InvoiceData] = []
     for i, page in enumerate(pages, start=1):
         items.extend(_extract_via_vision_segment(page, filename, f"[str.{i}]"))
-    return _merge_duplicate_invoices(items)
-
+    return _finalize_results(items)
 
 
 def _supplier_key(inv: InvoiceData) -> str:
@@ -478,20 +532,39 @@ def _supplier_key(inv: InvoiceData) -> str:
     return "|".join([p for p in parts if p])
 
 
-
 def _invoice_strength(inv: InvoiceData) -> int:
     score = 0
     for f in FIELDS:
         if getattr(inv, f, ""):
             score += 1
     if inv.BROJFAKT:
+        score += 5
+    if inv.NAZIVPP:
+        score += 3
+    if inv.SJEDISTEPP:
+        score += 2
+    if inv.IDPDVPP and re.fullmatch(r"4\d{12}", re.sub(r"\D", "", inv.IDPDVPP)):
+        score += 4
+    if inv.JIBPUPP and re.fullmatch(r"\d{12}", re.sub(r"\D", "", inv.JIBPUPP)):
         score += 3
     if inv.IZNSAPDV:
+        score += 4
+    if inv.IZNBEZPDV:
         score += 2
-    if inv.NAZIVPP:
+    if inv.IZNPDV:
         score += 2
+    if _amounts_consistent(inv):
+        score += 6
     return score
 
+
+def _amounts_consistent(inv: InvoiceData) -> bool:
+    try:
+        if inv.IZNBEZPDV and inv.IZNPDV and inv.IZNSAPDV:
+            return abs((float(inv.IZNBEZPDV) + float(inv.IZNPDV)) - float(inv.IZNSAPDV)) <= 0.06
+    except Exception:
+        return False
+    return False
 
 
 def _is_probable_continuation(a: InvoiceData, b: InvoiceData) -> bool:
@@ -508,7 +581,6 @@ def _is_probable_continuation(a: InvoiceData, b: InvoiceData) -> bool:
             return False
         return True
     return False
-
 
 
 def _compatible_for_merge(a: InvoiceData, b: InvoiceData) -> bool:
@@ -528,18 +600,6 @@ def _compatible_for_merge(a: InvoiceData, b: InvoiceData) -> bool:
     if a.DATUMF and b.DATUMF and a.DATUMF != b.DATUMF:
         return False
 
-    if a.IZNSAPDV and b.IZNSAPDV:
-        try:
-            diff = abs(float(a.IZNSAPDV) - float(b.IZNSAPDV))
-            if diff > 0.06:
-                if a_num and b_num and a_num == b_num:
-                    return False
-                if a.IZNBEZPDV and b.IZNBEZPDV:
-                    if abs(float(a.IZNBEZPDV) - float(b.IZNBEZPDV)) > 0.06:
-                        return False
-        except Exception:
-            pass
-
     if a_num and b_num and a_num == b_num:
         return True
 
@@ -553,7 +613,6 @@ def _compatible_for_merge(a: InvoiceData, b: InvoiceData) -> bool:
     if a.JIBPUPP and b.JIBPUPP and a.JIBPUPP == b.JIBPUPP:
         overlap += 1
     return overlap >= 3
-
 
 
 def _merge_duplicate_invoices(items: list[InvoiceData]) -> list[InvoiceData]:
@@ -578,9 +637,7 @@ def _merge_duplicate_invoices(items: list[InvoiceData]) -> list[InvoiceData]:
 
     merged = [_merge_invoice_group(g) for g in groups]
     merged = _inherit_missing_invoice_numbers(merged)
-    merged.sort(key=lambda x: ((x.DATUMF or "9999.99.99"), (x.BROJFAKT or "ZZZZ")))
-    return merged or [_error_invoice("", "Nema rezultata")]
-
+    return merged
 
 
 def _inherit_missing_invoice_numbers(items: list[InvoiceData]) -> list[InvoiceData]:
@@ -595,7 +652,6 @@ def _inherit_missing_invoice_numbers(items: list[InvoiceData]) -> list[InvoiceDa
                 cur._warnings = _validate(cur)
                 cur._valid = len(cur._warnings) == 0
     return items
-
 
 
 def _merge_invoice_group(group: list[InvoiceData]) -> InvoiceData:
@@ -618,12 +674,15 @@ def _merge_invoice_group(group: list[InvoiceData]) -> InvoiceData:
 
     merged._filename = group[0]._filename
     merged._warnings = []
+    merged._source_text = "\n\n".join([x._source_text for x in group if x._source_text])
+    merged._page_span = ", ".join([x._page_span for x in group if x._page_span])
     for x in group:
         merged._warnings.extend(x._warnings or [])
+    if merged._source_text:
+        _apply_header_priority(merged, merged._source_text)
     merged._warnings = list(dict.fromkeys(merged._warnings + _validate(merged)))
     merged._valid = len(merged._warnings) == 0
     return merged
-
 
 
 def _best_text(values: list[str]) -> str:
@@ -639,7 +698,6 @@ def _best_text(values: list[str]) -> str:
         return candidates[0]
     candidates.sort(key=lambda x: (len(re.sub(r"\D", "", x)), len(x)), reverse=True)
     return candidates[0]
-
 
 
 def _best_amount(values: list[str]) -> str:
@@ -663,6 +721,65 @@ def _best_amount(values: list[str]) -> str:
     vals.sort(key=len, reverse=True)
     return vals[0]
 
+
+def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
+    by_num: dict[str, list[InvoiceData]] = {}
+    no_num: list[InvoiceData] = []
+    for inv in items:
+        broj = (inv.BROJFAKT or "").strip()
+        if broj:
+            by_num.setdefault(broj, []).append(inv)
+        else:
+            no_num.append(inv)
+
+    final: list[InvoiceData] = []
+    for broj, group in by_num.items():
+        if len(group) == 1:
+            final.append(group[0])
+            continue
+
+        def score(inv: InvoiceData) -> tuple:
+            total = 0.0
+            try:
+                total = float(inv.IZNSAPDV or 0)
+            except Exception:
+                total = 0.0
+            return (
+                _invoice_strength(inv),
+                1 if _amounts_consistent(inv) else 0,
+                1 if inv.NAZIVPP else 0,
+                1 if inv.SJEDISTEPP else 0,
+                1 if re.fullmatch(r"4\d{12}", re.sub(r"\D", "", inv.IDPDVPP or "")) else 0,
+                1 if re.fullmatch(r"\d{12}", re.sub(r"\D", "", inv.JIBPUPP or "")) else 0,
+                total,
+            )
+
+        best = sorted(group, key=score, reverse=True)[0]
+        best._warnings = _validate(best)
+        best._valid = len(best._warnings) == 0
+        final.append(best)
+
+    final.extend(no_num)
+    final.sort(key=lambda x: ((x.DATUMF or "9999.99.99"), (x.BROJFAKT or "ZZZZ")))
+    return final
+
+
+def _normalize_numeric_id_strings(items: list[InvoiceData]) -> list[InvoiceData]:
+    for inv in items:
+        if inv.IDPDVPP:
+            inv.IDPDVPP = InvoiceData.normalize_idpdvpp(re.sub(r"\.0$", "", str(inv.IDPDVPP)))
+        if inv.JIBPUPP:
+            inv.JIBPUPP = InvoiceData.normalize_jibpupp(re.sub(r"\.0$", "", str(inv.JIBPUPP)))
+        inv._warnings = _validate(inv)
+        inv._valid = len(inv._warnings) == 0
+    return items
+
+
+def _finalize_results(items: list[InvoiceData]) -> list[InvoiceData]:
+    merged = _merge_duplicate_invoices(items)
+    merged = _choose_best_per_invoice(merged)
+    merged = _normalize_numeric_id_strings(merged)
+    return merged or [_error_invoice("", "Nema rezultata")]
 
 
 def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
@@ -707,7 +824,6 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
     return results or [_error_invoice(filename, "Nema rezultata")]
 
 
-
 def _validate(inv: InvoiceData) -> list[str]:
     warnings: list[str] = []
     if not inv.BROJFAKT:
@@ -747,7 +863,6 @@ def _validate(inv: InvoiceData) -> list[str]:
     return warnings
 
 
-
 def _error_invoice(filename: str, msg: str) -> InvoiceData:
     inv = InvoiceData()
     inv._filename = filename
@@ -756,7 +871,5 @@ def _error_invoice(filename: str, msg: str) -> InvoiceData:
     return inv
 
 
-
 def get_available_models() -> list[str]:
     return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-
