@@ -1,6 +1,7 @@
 """
 sidebar.py
 ==========
+Redizajnirani sidebar sa dark/light opcijom.
 """
 
 from __future__ import annotations
@@ -34,9 +35,8 @@ def render_sidebar() -> str:
         )
 
         st.markdown("<div class='sb-section'>Prikaz</div>", unsafe_allow_html=True)
-        dark_mode = st.toggle("Dark mode", key=_THEME_KEY)
         st.markdown(
-            f"<div class='sb-note'>Aktivni prikaz: <b>{'dark' if dark_mode else 'light'}</b> mode</div>",
+            "<div class='sb-note'><b>Dark mode</b> je aktivan za cijelu aplikaciju.</div>",
             unsafe_allow_html=True,
         )
 
@@ -83,8 +83,7 @@ def render_sidebar() -> str:
 
 
 def _init_theme_state() -> None:
-    if _THEME_KEY not in st.session_state:
-        st.session_state[_THEME_KEY] = True
+    st.session_state[_THEME_KEY] = True
 
 
 def _apply_sidebar_theme(dark_mode: bool) -> None:
