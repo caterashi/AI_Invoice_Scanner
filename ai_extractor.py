@@ -1,18 +1,12 @@
 """
 ai_extractor.py
 ===============
-Ekstrakcija podataka s PDF faktura pomoću OpenAI GPT-4o.
-
-Podržava:
-- tekstualne PDF-ove (PyMuPDF / pdfplumber)
-- skenirane PDF-ove (pdf2image + GPT Vision)
-- više dokumenata u jednom PDF-u
+Ekstrakcija podataka iz PDF faktura pomoću GPT modela.
 """
 
 from __future__ import annotations
 
 import base64
-import html
 import io
 import json
 import os
@@ -21,14 +15,22 @@ from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
+from openai import OpenAI
 from pydantic import BaseModel, Field, field_validator
+from PIL import Image
+from pdf2image import convert_from_bytes
+
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
+
+try:
+    import pdfplumber
+except Exception:
+    pdfplumber = None
 
 load_dotenv(Path(__file__).parent / ".env")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Konstante
-# ─────────────────────────────────────────────────────────────────────────────
 
 FIELDS = [
     "BROJFAKT",
@@ -51,10 +53,6 @@ _MAX_IMG_WIDTH = 3000
 _VISION_BATCH = 4
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Model
-# ─────────────────────────────────────────────────────────────────────────────
-
 class InvoiceData(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -73,59 +71,83 @@ class InvoiceData(BaseModel):
     _valid: bool = True
     _warnings: list[str] = []
 
-    @field_validator("BROJFAKT", "DATUMF", "DATUMPF", "NAZIVPP", "SJEDISTEPP")
+    @field_validator("BROJFAKT")
+    @classmethod
+    def normalize_bill_number(cls, v: str) -> str:
+        s = re.sub(r"\s+", " ", str(v or "")).strip()
+        if not s:
+            return ""
+        digits = re.sub(r"\D", "", s)
+        if re.fullmatch(r"\d{8}", digits) and digits[-4:].startswith("20"):
+            return f"{digits[:-4]}/{digits[-4:]}"
+        m = re.search(r"(\d{3,6})\s*/\s*(20\d{2})", s)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        return s
+
+    @field_validator("DATUMF", "DATUMPF")
+    @classmethod
+    def normalize_date(cls, v: str) -> str:
+        s = re.sub(r"\s+", " ", str(v or "")).strip()
+        if not s:
+            return ""
+        s = s.replace("/", ".").replace("-", ".")
+        m = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+        if not m:
+            return s
+        d, mo, y = m.groups()
+        return f"{int(d):02d}.{int(mo):02d}.{y}"
+
+    @field_validator("NAZIVPP", "SJEDISTEPP")
     @classmethod
     def clean_text(cls, v: str) -> str:
-        if not v:
-            return ""
-        return re.sub(r"\s+", " ", str(v)).strip()
+        return re.sub(r"\s+", " ", str(v or "")).strip()
 
     @field_validator("IDPDVPP")
     @classmethod
     def normalize_idpdvpp(cls, v: str) -> str:
-        if not v:
+        s = str(v or "").strip()
+        if not s:
             return ""
-        d = re.sub(r"\D", "", str(v))
+        d = re.sub(r"\D", "", s)
         if len(d) == 12:
             d = "4" + d
         elif len(d) == 13 and not d.startswith("4"):
             d = "4" + d[1:]
-        return d if len(d) == 13 and d.startswith("4") else str(v).strip()
+        return d if len(d) == 13 and d.startswith("4") else s
 
     @field_validator("JIBPUPP")
     @classmethod
     def normalize_jibpupp(cls, v: str) -> str:
-        if not v:
+        s = str(v or "").strip()
+        if not s:
             return ""
-        d = re.sub(r"\D", "", str(v))
+        d = re.sub(r"\D", "", s)
         if len(d) == 13 and d.startswith("4"):
             d = d[1:]
-        return d if len(d) == 12 else str(v).strip()
+        return d if len(d) == 12 else s
 
     @field_validator("IZNBEZPDV", "IZNSAPDV", "IZNPDV")
     @classmethod
     def normalize_amount(cls, v: str) -> str:
-        if v in (None, ""):
+        s = str(v or "").strip()
+        if not s:
             return ""
-        s = str(v).strip()
-        s = s.replace("\xa0", " ").replace("KM", "").replace("BAM", "")
-        s = s.replace(" ", "")
+        s = s.replace("\xa0", " ").replace("KM", "").replace("BAM", "").replace(" ", "")
         if re.match(r"^\d{1,3}(\.\d{3})+(,\d{1,2})?$", s):
             s = s.replace(".", "").replace(",", ".")
+        elif re.match(r"^\d{1,3}(,\d{3})+(\.\d{1,2})?$", s):
+            s = s.replace(",", "")
         else:
             s = s.replace(",", ".")
         try:
             return f"{float(s):.2f}"
         except Exception:
-            return str(v).strip()
+            return str(v or "").strip()
 
     def to_dict(self) -> dict[str, str]:
         return {f: getattr(self, f, "") for f in FIELDS}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Prompt
-# ─────────────────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """
 Ti si ekspert za ekstrakciju podataka sa faktura i računa iz Bosne i Hercegovine i regiona.
@@ -155,172 +177,129 @@ Pravila:
 - Čitaj ISKLJUČIVO ono što je eksplicitno vidljivo u dokumentu ili tekstu.
 - NE izmišljaj podatke.
 - NE koristi naziv fajla kao izvor podataka.
-- Ako postoji više iznosa ili više stopa PDV-a, vrati ukupni zbir za dokument.
+- Ako postoji više iznosa ili više stopa PDV-a, vrati ukupni zbir za taj račun.
 - Iznose vrati samo kao broj, bez valute, sa decimalnom tačkom.
 - DATUMF i DATUMPF vrati u formatu DD.MM.GGGG ako su vidljivi.
-- DOBAVLJAČ je izdavalac računa; kupca ignoriši.
-- Ako je prisutan samo jedan identifikacioni broj dobavljača, popuni IDPDVPP po pravilu 13 cifara; JIBPUPP popuni samo ako je na dokumentu jasno naveden PDV/PIB broj ili se pouzdano može dobiti skidanjem vodeće 4 iz istog broja.
+- DOBAVLJAČ je izdavalac računa; kupca, primaoca, mjesto isporuke i adresu kupca ignoriši.
+- NAZIVPP, SJEDISTEPP, IDPDVPP i JIBPUPP uzimaj ISKLJUČIVO iz zaglavlja izdavaoca, pored loga/naziva firme i registracionih podataka.
+- Nikada ne uzimaj naziv, adresu, ID ili PDV broj kupca za polja dobavljača.
+- Ako je prisutan samo jedan identifikacioni broj dobavljača, popuni IDPDVPP po pravilu 13 cifara; JIBPUPP popuni samo ako je na dokumentu jasno naveden PDV/PIB broj ili se pouzdano može dobiti skidanjem vodeće cifre 4 iz istog ID broja dobavljača.
+- Za DATUMF koristi samo datum označen kao Datum računa / Datum fakture / Datum izdavanja. Ne koristi datum isporuke kao DATUMF.
+- Za DATUMPF koristi samo poseban datum prijema/evidentiranja ako je jasno odvojen od DATUMF; inače vrati "".
 
-Vrati isključivo JSON array, npr.:
-[
-  {
-    "BROJFAKT": "",
-    "DATUMF": "",
-    "DATUMPF": "",
-    "NAZIVPP": "",
-    "SJEDISTEPP": "",
-    "IDPDVPP": "",
-    "JIBPUPP": "",
-    "IZNBEZPDV": "",
-    "IZNSAPDV": "",
-    "IZNPDV": ""
-  }
-]
-""".strip()
+Logika po dokumentu:
+1. Prvo pronađi BROJFAKT.
+2. Zatim sve ostale podatke traži samo unutar istog bloka tog računa.
+3. IZNBEZPDV, IZNPDV i IZNSAPDV uzimaj isključivo iz završnog total bloka tog istog računa: "Ukupno bez PDV-a", "Ukupno PDV", "UKUPAN IZNOS ZA NAPLATU".
+4. Ako nova strana počne sa drugim "RAČUN - OTPREMNICA broj" ili drugim brojem računa, to je novi račun i totals se ne smiju miješati.
+5. Ako se isti BROJFAKT pojavljuje na više strana, to je JEDAN račun. Spoji te strane u jedan rezultat i uzmi završne totale sa zadnje strane istog računa.
+6. Ako isti dobavljač očigledno izdaje sve račune u PDF-u, polja NAZIVPP, SJEDISTEPP, IDPDVPP i JIBPUPP moraju ostati dosljedna kroz sve rezultate.
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# OpenAI
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_client():
-    from openai import OpenAI
-
-    key = (
-        st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
-    ) or os.getenv("OPENAI_API_KEY", "")
-
-    if not key:
-        raise ValueError("OPENAI_API_KEY nije postavljen")
-
-    return OpenAI(api_key=key)
+Kontrolne provjere:
+- Ako više različitih računa imaju identične iznose, provjeri da li si slučajno preuzeo totals sa susjednog računa.
+- Ako se NAZIVPP ponavlja, a SJEDISTEPP ili identifikacioni brojevi se mijenjaju između računa u istom PDF-u, vjerovatno si uzeo podatke kupca umjesto dobavljača.
+- Ako IZNBEZPDV + IZNPDV nije približno jednako IZNSAPDV, potraži drugi total blok za isti račun.
+"""
 
 
 def _active_model(default: str = "gpt-4o") -> str:
     return st.session_state.get("selected_model", default)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Ekstrakcija teksta
-# ─────────────────────────────────────────────────────────────────────────────
+def _get_api_key() -> str:
+    key = st.session_state.get("openai_api_key", "")
+    if key:
+        return key
+    try:
+        if hasattr(st, "secrets"):
+            return st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        pass
+    return os.getenv("OPENAI_API_KEY", "")
 
-def _extract_text(pdf_bytes: bytes) -> str:
-    text = _extract_text_pymupdf(pdf_bytes)
-    if _is_text_pdf(text):
-        return text
 
-    text = _extract_text_pdfplumber(pdf_bytes)
-    if _is_text_pdf(text):
-        return text
-
-    return ""
+def _get_client() -> OpenAI:
+    api_key = _get_api_key()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY nije postavljen")
+    return OpenAI(api_key=api_key)
 
 
 def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
+    if fitz is None:
+        return ""
     try:
-        import fitz
-
-        parts = []
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            for page in doc:
-                text = page.get_text("text") or ""
-                if len(re.sub(r"\s+", "", text)) > 10:
-                    parts.append(text.strip())
-                    continue
-
-                html_text = page.get_text("html") or ""
-                if html_text:
-                    html_text = re.sub(r"<img[^>]*>", " ", html_text, flags=re.IGNORECASE)
-                    html_text = re.sub(r"<[^>]+>", " ", html_text)
-                    html_text = html.unescape(html_text)
-                    html_text = re.sub(r"\s+", " ", html_text).strip()
-                    if len(re.sub(r"\s+", "", html_text)) > 10:
-                        parts.append(html_text)
-
-        return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
+        out: list[str] = []
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page in doc:
+            out.append(page.get_text("text") or "")
+        return "\n".join(out)
     except Exception:
         return ""
 
 
 def _extract_text_pdfplumber(pdf_bytes: bytes) -> str:
+    if pdfplumber is None:
+        return ""
     try:
-        import pdfplumber
-
-        parts = []
+        out: list[str] = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                text = page.extract_text(x_tolerance=2, y_tolerance=2)
-                if text and text.strip():
-                    parts.append(text.strip())
-
-        return "\n\n--- NOVA STRANICA ---\n\n".join(parts)
+                out.append(page.extract_text() or "")
+        return "\n".join(out)
     except Exception:
         return ""
+
+
+def _extract_text(pdf_bytes: bytes) -> str:
+    t1 = _extract_text_pymupdf(pdf_bytes)
+    t2 = _extract_text_pdfplumber(pdf_bytes)
+    text = t1 if len(re.sub(r"\s+", "", t1)) >= len(re.sub(r"\s+", "", t2)) else t2
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _is_text_pdf(text: str) -> bool:
     return len(re.sub(r"\s+", "", text or "")) >= _MIN_TEXT_CHARS
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PDF → slike
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
-    from pdf2image import convert_from_bytes
-    from PIL import Image
-
-    pages = convert_from_bytes(pdf_bytes, dpi=_DPI)
-    results = []
-
-    for page in pages:
-        w, h = page.size
-        if h > _MAX_IMG_HEIGHT or w > _MAX_IMG_WIDTH:
-            ratio = min(_MAX_IMG_WIDTH / w, _MAX_IMG_HEIGHT / h)
-            page = page.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
-
+    pages = convert_from_bytes(pdf_bytes, dpi=_DPI, fmt="jpeg")
+    result: list[str] = []
+    for img in pages:
+        img = img.convert("RGB")
+        w, h = img.size
+        ratio = min(_MAX_IMG_WIDTH / max(w, 1), _MAX_IMG_HEIGHT / max(h, 1), 1.0)
+        if ratio < 1.0:
+            img = img.resize((int(w * ratio), int(h * ratio)))
         buf = io.BytesIO()
-        page.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
-        results.append(base64.b64encode(buf.getvalue()).decode())
+        img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+        result.append(base64.b64encode(buf.getvalue()).decode())
+    return result
 
-    return results
 
-
-def _combine_images(b64_list: list[str]) -> str:
-    from PIL import Image
-
-    images = [Image.open(io.BytesIO(base64.b64decode(b))) for b in b64_list]
-    max_w = max(img.width for img in images)
-    total_h = sum(img.height for img in images)
-
-    if total_h > _MAX_IMG_HEIGHT:
-        ratio = _MAX_IMG_HEIGHT / total_h
-        images = [
-            img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
-            for img in images
-        ]
-        max_w = max(img.width for img in images)
-        total_h = sum(img.height for img in images)
-
-    combined = Image.new("RGB", (max_w, total_h), (255, 255, 255))
+def _combine_images(b64_pages: list[str]) -> str:
+    images = [Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB") for x in b64_pages]
+    width = max(img.width for img in images)
+    height = sum(img.height for img in images)
+    canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
     y = 0
     for img in images:
-        combined.paste(img, (0, y))
+        canvas.paste(img, (0, y))
         y += img.height
-
+    if canvas.height > _MAX_IMG_HEIGHT:
+        ratio = _MAX_IMG_HEIGHT / canvas.height
+        canvas = canvas.resize((int(canvas.width * ratio), _MAX_IMG_HEIGHT))
+    if canvas.width > _MAX_IMG_WIDTH:
+        ratio = _MAX_IMG_WIDTH / canvas.width
+        canvas = canvas.resize((_MAX_IMG_WIDTH, int(canvas.height * ratio)))
     buf = io.BytesIO()
-    combined.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+    canvas.save(buf, format="JPEG", quality=_JPEG_QUALITY)
     return base64.b64encode(buf.getvalue()).decode()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GPT pozivi
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
     client = _get_client()
     model = _active_model()
-
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -334,6 +313,8 @@ def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
                         f"Fajl: {filename}\n\n"
                         "Ispod je tekst iz PDF dokumenta. Koristi ISKLJUČIVO podatke koji se vide u tekstu. "
                         "NE izmišljaj i NE koristi naziv fajla kao izvor podataka. "
+                        "Dobavljač se uzima samo iz zaglavlja izdavaoca; kupca ignoriši. "
+                        "Totals veži samo za isti broj računa, a isti broj računa na više strana spoji u jedan rezultat. "
                         "Vrati JSON array za sve pronađene dokumente.\n\n"
                         f"TEKST DOKUMENTA:\n{text}"
                     ),
@@ -348,7 +329,6 @@ def _extract_via_text(text: str, filename: str) -> list[InvoiceData]:
 def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
     client = _get_client()
     model = _active_model()
-
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -360,21 +340,19 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
                     "role": "user",
                     "content": [
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{b64_image}",
-                                "detail": "high",
-                            },
-                        },
-                        {
                             "type": "text",
                             "text": (
                                 f"Fajl: {filename}\n\n"
-                                "Ovo je skenirana slika dokumenta. Čitaj ISKLJUČIVO ono što je fizički vidljivo na slici. "
-                                "NE izmišljaj, NE pretpostavljaj i NE koristi naziv fajla kao izvor podataka. "
-                                "Ako neko polje nije jasno vidljivo, ostavi prazan string. "
-                                "Vrati JSON array za sve dokumente koji se vide na slici."
+                                "Prouči sliku dokumenta i vrati JSON array za sve pronađene dokumente. "
+                                "Koristi ISKLJUČIVO ono što se vidi na slici. "
+                                "Dobavljač se uzima samo iz zaglavlja izdavaoca; kupca ignoriši. "
+                                "Totals veži samo za isti broj računa, a isti broj računa na više strana spoji u jedan rezultat. "
+                                "NE koristi naziv fajla kao izvor podataka."
                             ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"},
                         },
                     ],
                 },
@@ -388,21 +366,15 @@ def _extract_via_vision(b64_image: str, filename: str) -> list[InvoiceData]:
 def _extract_via_vision_batched(b64_pages: list[str], filename: str) -> list[InvoiceData]:
     all_items: list[InvoiceData] = []
     total = len(b64_pages)
-
     for start in range(0, total, _VISION_BATCH):
         batch = b64_pages[start:start + _VISION_BATCH]
         end = min(start + _VISION_BATCH, total)
         label = f"{filename} [str.{start + 1}-{end}/{total}]"
         image = _combine_images(batch) if len(batch) > 1 else batch[0]
         all_items.extend(_extract_via_vision(image, label))
-
     merged = _merge_duplicate_invoices(all_items)
     return merged or [_error_invoice(filename, "Nema rezultata")]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Javna funkcija
-# ─────────────────────────────────────────────────────────────────────────────
 
 def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[InvoiceData]:
     text = _extract_text(pdf_bytes)
@@ -416,71 +388,41 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[Invo
 
     if not pages:
         return [_error_invoice(filename, "PDF nema stranica")]
-
     if len(pages) == 1:
         return _extract_via_vision(pages[0], filename)
-
     return _extract_via_vision_batched(pages, filename)
 
 
 def _merge_duplicate_invoices(items: list[InvoiceData]) -> list[InvoiceData]:
-    """
-    Spaja duplikate kada je isti račun rasut preko više batch-eva / stranica.
-    Primarni ključ spajanja je BROJFAKT.
-    Ako BROJFAKT nedostaje, zadržava stavku bez spajanja.
-    """
     merged_by_number: dict[str, InvoiceData] = {}
     remainder: list[InvoiceData] = []
-
     for inv in items:
         broj = (inv.BROJFAKT or "").strip()
         if not broj:
             remainder.append(inv)
             continue
-
         if broj not in merged_by_number:
             merged_by_number[broj] = inv
             continue
-
         merged_by_number[broj] = _merge_invoice_pair(merged_by_number[broj], inv)
-
-    ordered: list[InvoiceData] = list(merged_by_number.values())
+    ordered = list(merged_by_number.values())
     ordered.extend(remainder)
-    return ordered
+    return _harmonize_supplier_fields(ordered)
 
 
 def _merge_invoice_pair(a: InvoiceData, b: InvoiceData) -> InvoiceData:
-    """
-    Spaja dva rezultata za isti BROJFAKT i zadržava informativniju vrijednost.
-    Pravila:
-    - zadrži neprazno polje
-    - ako su oba neprazna, zadrži dužu tekstualnu vrijednost
-    - za iznose zadrži veći broj (ukupni račun je informativniji od parcijalnog)
-    - spoji upozorenja bez duplikata
-    """
     merged = InvoiceData()
-
     text_fields = ["BROJFAKT", "DATUMF", "DATUMPF", "NAZIVPP", "SJEDISTEPP", "IDPDVPP", "JIBPUPP"]
     amount_fields = ["IZNBEZPDV", "IZNSAPDV", "IZNPDV"]
 
     for field in text_fields:
-        av = getattr(a, field, "") or ""
-        bv = getattr(b, field, "") or ""
-        chosen = _prefer_text_value(av, bv)
-        setattr(merged, field, chosen)
-
+        setattr(merged, field, _prefer_text_value(getattr(a, field, "") or "", getattr(b, field, "") or ""))
     for field in amount_fields:
-        av = getattr(a, field, "") or ""
-        bv = getattr(b, field, "") or ""
-        chosen = _prefer_amount_value(av, bv)
-        setattr(merged, field, chosen)
+        setattr(merged, field, _prefer_amount_value(getattr(a, field, "") or "", getattr(b, field, "") or ""))
 
     merged._filename = a._filename or b._filename
     merged._warnings = list(dict.fromkeys((a._warnings or []) + (b._warnings or [])))
-    merged._valid = len(merged._warnings) == 0
-
-    refreshed = _validate(merged)
-    merged._warnings = list(dict.fromkeys(merged._warnings + refreshed))
+    merged._warnings = list(dict.fromkeys(merged._warnings + _validate(merged)))
     merged._valid = len(merged._warnings) == 0
     return merged
 
@@ -494,12 +436,10 @@ def _prefer_text_value(a: str, b: str) -> str:
         return b
     if not a and not b:
         return ""
-
     a_digits = len(re.sub(r"\D", "", a))
     b_digits = len(re.sub(r"\D", "", b))
     if a_digits != b_digits and max(a_digits, b_digits) >= 8:
         return a if a_digits > b_digits else b
-
     return a if len(a) >= len(b) else b
 
 
@@ -512,18 +452,11 @@ def _prefer_amount_value(a: str, b: str) -> str:
         return b
     if not a and not b:
         return ""
-
     try:
-        af = float(a)
-        bf = float(b)
-        return f"{max(af, bf):.2f}"
+        return f"{max(float(a), float(b)):.2f}"
     except Exception:
         return a if len(a) >= len(b) else b
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Parsiranje
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
     if not raw:
@@ -552,7 +485,6 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
 
     if isinstance(data, dict):
         data = [data]
-
     if not isinstance(data, list) or not data:
         return [_error_invoice(filename, "Model nije vratio validan JSON array")]
 
@@ -560,9 +492,7 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
     for i, item in enumerate(data, start=1):
         if not isinstance(item, dict):
             continue
-
         payload = {field: str(item.get(field, "") or "").strip() for field in FIELDS}
-
         try:
             inv = InvoiceData(**payload)
             inv._filename = f"{filename} [{i}/{len(data)}]" if len(data) > 1 else filename
@@ -572,12 +502,70 @@ def _parse_response(raw: str, filename: str) -> list[InvoiceData]:
         except Exception as e:
             results.append(_error_invoice(filename, str(e)))
 
+    results = _harmonize_supplier_fields(results)
     return results or [_error_invoice(filename, "Nema rezultata")]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Validacija
-# ─────────────────────────────────────────────────────────────────────────────
+def _harmonize_supplier_fields(items: list[InvoiceData]) -> list[InvoiceData]:
+    if len(items) < 2:
+        return items
+
+    valid = [x for x in items if any([x.NAZIVPP, x.SJEDISTEPP, x.IDPDVPP, x.JIBPUPP])]
+    if len(valid) < 2:
+        return items
+
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+    supplier_name_counts: dict[str, int] = {}
+    for inv in valid:
+        name = norm(inv.NAZIVPP)
+        if name:
+            supplier_name_counts[name] = supplier_name_counts.get(name, 0) + 1
+
+    if not supplier_name_counts:
+        return items
+
+    top_name, top_name_count = max(supplier_name_counts.items(), key=lambda kv: kv[1])
+    if top_name_count < max(2, int(len(valid) * 0.6)):
+        return items
+
+    same_name = [x for x in valid if norm(x.NAZIVPP) == top_name or not norm(x.NAZIVPP)]
+
+    def most_common(values: list[str]) -> str:
+        counts: dict[str, int] = {}
+        original: dict[str, str] = {}
+        for v in values:
+            vv = (v or "").strip()
+            if not vv:
+                continue
+            k = norm(vv)
+            counts[k] = counts.get(k, 0) + 1
+            original.setdefault(k, vv)
+        if not counts:
+            return ""
+        k = max(counts.items(), key=lambda kv: kv[1])[0]
+        return original[k]
+
+    canonical_name = most_common([x.NAZIVPP for x in same_name])
+    canonical_addr = most_common([x.SJEDISTEPP for x in same_name])
+    canonical_id = most_common([x.IDPDVPP for x in same_name])
+    canonical_pdv = most_common([x.JIBPUPP for x in same_name])
+
+    for inv in items:
+        if norm(inv.NAZIVPP) == top_name or not norm(inv.NAZIVPP):
+            if canonical_name:
+                inv.NAZIVPP = canonical_name
+            if canonical_addr:
+                inv.SJEDISTEPP = canonical_addr
+            if canonical_id:
+                inv.IDPDVPP = canonical_id
+            if canonical_pdv:
+                inv.JIBPUPP = canonical_pdv
+            inv._warnings = _validate(inv)
+            inv._valid = len(inv._warnings) == 0
+    return items
+
 
 def _validate(inv: InvoiceData) -> list[str]:
     warnings: list[str] = []
@@ -622,10 +610,6 @@ def _validate(inv: InvoiceData) -> list[str]:
 
     return warnings
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pomoćne
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _error_invoice(filename: str, msg: str) -> InvoiceData:
     inv = InvoiceData()
