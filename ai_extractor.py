@@ -684,17 +684,39 @@ def _choose_best_per_invoice(items: list[InvoiceData]) -> list[InvoiceData]:
         if len(group) == 1:
             final.append(group[0])
             continue
+
+        positive_exists = False
+        for x in group:
+            try:
+                if float(x.IZNSAPDV or 0) > 0:
+                    positive_exists = True
+                    break
+            except Exception:
+                pass
+
         def score(inv: InvoiceData):
             try:
                 total = float(inv.IZNSAPDV or 0)
             except Exception:
                 total = 0.0
+            try:
+                bez = float(inv.IZNBEZPDV or 0)
+            except Exception:
+                bez = 0.0
+            try:
+                pdv = float(inv.IZNPDV or 0)
+            except Exception:
+                pdv = 0.0
             id_ok = 1 if re.fullmatch(r'4\d{12}', re.sub(r'\D', '', inv.IDPDVPP or '')) else 0
             pdv_ok = 1 if re.fullmatch(r'\d{12}', re.sub(r'\D', '', inv.JIBPUPP or '')) else 0
             outlier_penalty = -100 if _is_total_outlier(inv, group) else 0
+            zero_penalty = -150 if positive_exists and total == 0 and bez == 0 and pdv == 0 else 0
             return (
-                _invoice_strength(inv) + outlier_penalty,
+                _invoice_strength(inv) + outlier_penalty + zero_penalty,
                 1 if _amounts_consistent(inv) else 0,
+                1 if total > 0 else 0,
+                1 if bez > 0 else 0,
+                1 if pdv > 0 else 0,
                 id_ok,
                 pdv_ok,
                 1 if inv.NAZIVPP else 0,
@@ -719,10 +741,62 @@ def _normalize_numeric_id_strings(items: list[InvoiceData]) -> list[InvoiceData]
     return items
 
 
+def _digit_distance(a: str, b: str) -> int:
+    a = re.sub(r'\D', '', a or '')
+    b = re.sub(r'\D', '', b or '')
+    if not a or not b:
+        return 99
+    if len(a) != len(b):
+        return 99
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def _normalize_supplier_name(name: str) -> str:
+    s = re.sub(r'\s+', ' ', name or '').strip().lower()
+    s = s.replace('d.o.o.', 'doo').replace('d.o.o', 'doo')
+    return s
+
+
+def _majority_fix_supplier_ids(items: list[InvoiceData]) -> list[InvoiceData]:
+    supplier_groups = {}
+    for inv in items:
+        key = _normalize_supplier_name(inv.NAZIVPP)
+        if not key:
+            continue
+        pair = (re.sub(r'\D', '', inv.IDPDVPP or ''), re.sub(r'\D', '', inv.JIBPUPP or ''))
+        if re.fullmatch(r'4\d{12}', pair[0]) and re.fullmatch(r'\d{12}', pair[1]) and pair[0][1:] == pair[1]:
+            supplier_groups.setdefault(key, {})
+            supplier_groups[key][pair] = supplier_groups[key].get(pair, 0) + 1
+
+    dominant = {}
+    for key, counts in supplier_groups.items():
+        if counts:
+            best_pair, best_count = sorted(counts.items(), key=lambda kv: (kv[1], kv[0][0], kv[0][1]), reverse=True)[0]
+            if best_count >= 2:
+                dominant[key] = best_pair
+
+    for inv in items:
+        key = _normalize_supplier_name(inv.NAZIVPP)
+        if key not in dominant:
+            continue
+        best_id, best_pdv = dominant[key]
+        cur_id = re.sub(r'\D', '', inv.IDPDVPP or '')
+        cur_pdv = re.sub(r'\D', '', inv.JIBPUPP or '')
+        valid_pair = bool(re.fullmatch(r'4\d{12}', cur_id) and re.fullmatch(r'\d{12}', cur_pdv) and cur_id[1:] == cur_pdv)
+        same_or_close = (_digit_distance(cur_id, best_id) <= 2) or (_digit_distance(cur_pdv, best_pdv) <= 2)
+        if (not valid_pair) or same_or_close:
+            inv.IDPDVPP = best_id
+            inv.JIBPUPP = best_pdv
+            inv._warnings = _validate(inv)
+            inv._valid = len(inv._warnings) == 0
+    return items
+
+
 def _finalize_results(items: list[InvoiceData]) -> list[InvoiceData]:
     merged = _merge_duplicate_invoices(items)
     best = _choose_best_per_invoice(merged)
     best = _normalize_numeric_id_strings(best)
+    best = _majority_fix_supplier_ids(best)
     return best or [_error_invoice('', 'Nema rezultata')]
 
 
@@ -795,5 +869,3 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = '') -> list[Invo
 
 def get_available_models() -> list[str]:
     return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo']
-
-
