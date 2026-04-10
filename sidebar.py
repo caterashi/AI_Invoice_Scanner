@@ -33,12 +33,6 @@ def render_sidebar() -> str:
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div class='sb-section'>Prikaz</div>", unsafe_allow_html=True)
-        st.markdown(
-            "<div class='sb-note'><b>Dark mode</b> je aktivan za cijelu aplikaciju.</div>",
-            unsafe_allow_html=True,
-        )
-
         st.markdown("<div class='sb-section'>Navigacija</div>", unsafe_allow_html=True)
 
         if "active_page" not in st.session_state:
