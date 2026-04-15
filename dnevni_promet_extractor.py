@@ -312,3 +312,5 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[Dnev
 
 def extract_dnevni_promet_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[DnevniPrometData]:
     return extract_invoices_from_pdf(pdf_bytes, filename)
+# Alias za upload.py
+PROMET_FIELDS = FIELDS
