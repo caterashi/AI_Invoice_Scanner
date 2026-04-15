@@ -4,7 +4,7 @@ pages/upload.py
 ===============
 Upload stranica za tri odvojena knjigovodstvena toka:
 - KIF -> ai_extractor
-- KUF -> KUF_extractor
+- KUF -> kuf_extractor
 - Dnevni promet -> dnevni_promet_extractor
 
 Svaki tab koristi svoj parser, svoja polja, svoj data editor i svoj Excel export.
@@ -22,8 +22,8 @@ import streamlit as st
 from ai_extractor import FIELDS as KIF_FIELDS
 from ai_extractor import InvoiceData as KIFData
 from ai_extractor import extract_invoices_from_pdf as extract_kif_from_pdf
-from KUF_extractor import FIELDS as KUF_FIELDS
-from KUF_extractor import KUFData, extract_invoices_from_pdf as extract_kuf_from_pdf
+from kuf_extractor import FIELDS as KUF_FIELDS
+from kuf_extractor import KUFData, extract_invoices_from_pdf as extract_kuf_from_pdf
 from dnevni_promet_extractor import DnevniPrometData
 from dnevni_promet_extractor import FIELDS as PROMET_FIELDS
 from dnevni_promet_extractor import extract_invoices_from_pdf as extract_promet_from_pdf
