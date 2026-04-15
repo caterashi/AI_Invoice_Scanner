@@ -351,3 +351,5 @@ def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[KUFD
 
 def extract_kuf_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[KUFData]:
     return extract_invoices_from_pdf(pdf_bytes, filename)
+# Alias koji očekuje pages/upload.py
+KUF_FIELDS = FIELDS
