@@ -132,7 +132,6 @@ def render_upload() -> None:
     dark_mode = _force_dark_mode()
     _apply_upload_theme(dark_mode)
     _render_topbar()
-    _render_hero(dark_mode)
     _render_saved_summary()
 
     tab1, tab2, tab3 = st.tabs(["KIF", "KUF", "Dnevni promet"])
