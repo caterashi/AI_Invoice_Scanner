@@ -72,8 +72,8 @@ PROMET_HEADERS = {
 _KIND_CONFIG: dict[str, dict[str, Any]] = {
     "kif": {
         "title": "📥 KIF upload",
-        "subtitle": "Knjiga ulaznih faktura. Ovaj tab koristi ai_extractor i KIF schema polja.",
-        "uploader_label": "Odaberi KIF PDF fajlove",
+        "subtitle": "Knjiga izlaznih faktura.",
+        "uploader_label": "Odaberi KIF PDF datoteke",
         "parser": extract_kif_from_pdf,
         "model_cls": KIFData,
         "fields": KIF_FIELDS,
@@ -90,8 +90,8 @@ _KIND_CONFIG: dict[str, dict[str, Any]] = {
     },
     "kuf": {
         "title": "📤 KUF upload",
-        "subtitle": "Knjiga izlaznih/ulaznih knjigovodstvenih dokumenata za PDV evidenciju. Ovaj tab koristi KUF_extractor.",
-        "uploader_label": "Odaberi KUF PDF fajlove",
+        "subtitle": "Knjiga ulaznih faktura",
+        "uploader_label": "Odaberi KUF PDF datoteke",
         "parser": extract_kuf_from_pdf,
         "model_cls": KUFData,
         "fields": KUF_FIELDS,
@@ -108,8 +108,8 @@ _KIND_CONFIG: dict[str, dict[str, Any]] = {
     },
     "promet": {
         "title": "🧾 Dnevni promet",
-        "subtitle": "Dnevni izvještaji i evidencija prometa. Ovaj tab koristi dnevni_promet_extractor.",
-        "uploader_label": "Odaberi PDF fajlove dnevnog prometa",
+        "subtitle": "Dnevni izvještaji i evidencija prometa.",
+        "uploader_label": "Odaberi PDF datoteke dnevnog prometa",
         "parser": extract_promet_from_pdf,
         "model_cls": DnevniPrometData,
         "fields": PROMET_FIELDS,
@@ -170,20 +170,6 @@ def _force_dark_mode() -> bool:
 
 def _render_topbar() -> None:
     st.markdown("<div class='section-title'>Učitavanje dokumenata po knjigovodstvenoj vrsti</div>", unsafe_allow_html=True)
-
-
-def _render_hero(dark_mode: bool) -> None:
-    mode_label = "Dark mode uključen" if dark_mode else "Light mode uključen"
-    st.markdown(
-        f"""
-        <div class="hero-wrap">
-            <div class="hero-title">Finalni upload: KIF / KUF / dnevni promet</div>
-            <div class="hero-subtitle">Svaki tab koristi svoj parser, svoj schema model, svoj pregled kolona i svoj Excel export bez miješanja polja između modula.</div>
-            <div class="hero-badge">{mode_label}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def _render_saved_summary() -> None:
