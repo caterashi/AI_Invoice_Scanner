@@ -1,8 +1,8 @@
 """
 pages/upload.py
 ===============
-KIF  → ai_extractor.py           (extract_invoices_from_pdf, InvoiceData, FIELDS)
-KUF  → kuf_extractor.py          (extract_kuf_from_pdf, KUFData, KUF_FIELDS)
+KIF  → ai_extractor.py              (extract_invoices_from_pdf, InvoiceData, FIELDS)
+KUF  → kuf_extractor.py             (extract_kuf_from_pdf, KUFData, KUF_FIELDS)
 Promet → dnevni_promet_extractor.py (extract_promet_from_pdf, DnevniPrometData, PROMET_FIELDS)
 """
 
@@ -30,115 +30,106 @@ from dnevni_promet_extractor import (
     extract_promet_from_pdf,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Zaglavlja kolona za editor / Excel
-# ─────────────────────────────────────────────────────────────────────────────
 _DARK_KEY = "app_dark_mode"
 _SHARED_SAVE_KEY = "shared_saved_records"
 
 KIF_HEADERS = {
-    "BROJFAKT":   "Broj fakture",
-    "DATUMF":     "Datum fakture",
-    "DATUMPF":    "Datum prijema",
-    "NAZIVPP":    "Kupac / primalac",
+    "BROJFAKT": "Broj fakture",
+    "DATUMF": "Datum fakture",
+    "DATUMPF": "Datum prijema",
+    "NAZIVPP": "Kupac / primalac",
     "SJEDISTEPP": "Sjedište kupca",
-    "IDPDVPP":    "ID PDV",
-    "JIBPUPP":    "JIB",
-    "IZNBEZPDV":  "Iznos bez PDV",
-    "IZNSAPDV":   "Iznos sa PDV",
-    "IZNPDV":     "Iznos PDV",
+    "IDPDVPP": "ID PDV",
+    "JIBPUPP": "JIB",
+    "IZNBEZPDV": "Iznos bez PDV",
+    "IZNSAPDV": "Iznos sa PDV",
+    "IZNPDV": "Iznos PDV",
 }
 
 KUF_HEADERS = {
-    "BROJ_DOKUMENTA":    "Broj dokumenta",
-    "DATUM_DOKUMENTA":   "Datum dokumenta",
-    "DATUM_PRIJEMA":     "Datum prijema",
-    "DOBAVLJAC_NAZIV":   "Dobavljač",
-    "DOBAVLJAC_SJEDISTE":"Sjedište dobavljača",
-    "DOBAVLJAC_IDPDV":   "ID PDV dobavljača",
-    "DOBAVLJAC_JIB":     "JIB dobavljača",
-    "IZNOS_BEZ_PDV":     "Iznos bez PDV",
-    "IZNOS_PDV":         "Iznos PDV",
-    "IZNOS_SA_PDV":      "Iznos sa PDV",
-    "VRSTA_DOKUMENTA":   "Vrsta dokumenta",
+    "BROJ_DOKUMENTA": "Broj dokumenta",
+    "DATUM_DOKUMENTA": "Datum dokumenta",
+    "DATUM_PRIJEMA": "Datum prijema",
+    "DOBAVLJAC_NAZIV": "Dobavljač",
+    "DOBAVLJAC_SJEDISTE": "Sjedište dobavljača",
+    "DOBAVLJAC_IDPDV": "ID PDV dobavljača",
+    "DOBAVLJAC_JIB": "JIB dobavljača",
+    "IZNOS_BEZ_PDV": "Iznos bez PDV",
+    "IZNOS_PDV": "Iznos PDV",
+    "IZNOS_SA_PDV": "Iznos sa PDV",
+    "VRSTA_DOKUMENTA": "Vrsta dokumenta",
 }
 
 PROMET_HEADERS = {
-    "DATUM_PROMETA":            "Datum prometa",
-    "BROJ_DNEVNOG_IZVJESTAJA":  "Broj dnevnog izvještaja",
-    "POSLJEDNJI_BF":            "Posljednji BF",
-    "POSLJEDNJI_RF":            "Posljednji RF",
-    "BROJ_IZDATIH_FAKTURA":     "Broj izdatih faktura",
-    "UKUPAN_DNEVNI_PROMET":     "Ukupan dnevni promet",
-    "POSLOVNA_JEDINICA":        "Poslovna jedinica",
-    "FISKALNI_UREDJAJ":         "Fiskalni uređaj",
+    "DATUM_PROMETA": "Datum prometa",
+    "BROJ_DNEVNOG_IZVJESTAJA": "Broj dnevnog izvještaja",
+    "POSLJEDNJI_BF": "Posljednji BF",
+    "POSLJEDNJI_RF": "Posljednji RF",
+    "BROJ_IZDATIH_FAKTURA": "Broj izdatih faktura",
+    "UKUPAN_DNEVNI_PROMET": "Ukupan dnevni promet",
+    "POSLOVNA_JEDINICA": "Poslovna jedinica",
+    "FISKALNI_UREDJAJ": "Fiskalni uređaj",
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Centralna konfiguracija po vrsti
-# ─────────────────────────────────────────────────────────────────────────────
 _KIND_CONFIG: dict[str, dict[str, Any]] = {
     "kif": {
-        "title":           "📥 KIF – Knjiga izlaznih faktura",
-        "subtitle":        "Izlazne fakture / KIF.",
-        "uploader_label":  "Odaberi KIF PDF dokumente",
-        "parser":          extract_kif_from_pdf,
-        "model_cls":       KIFData,
-        "fields":          KIF_FIELDS,
-        "headers":         KIF_HEADERS,
-        "excel_prefix":    "kif",
-        "sheet_name":      "KIF",
-        "saved_label":     "KIF stavke",
-        "results_key":     "upload_results_kif",
-        "errors_key":      "upload_errors_kif",
-        "last_run_key":    "upload_last_run_kif",
-        "editor_key":      "upload_editor_kif",
-        "saved_key":       "saved_kif_records",
+        "title": "📥 KIF – Knjiga izlaznih faktura",
+        "subtitle": "Izlazne fakture / KIF.",
+        "uploader_label": "Odaberi KIF PDF dokumente",
+        "parser": extract_kif_from_pdf,
+        "model_cls": KIFData,
+        "fields": KIF_FIELDS,
+        "headers": KIF_HEADERS,
+        "excel_prefix": "kif",
+        "sheet_name": "KIF",
+        "saved_label": "KIF stavke",
+        "results_key": "upload_results_kif",
+        "errors_key": "upload_errors_kif",
+        "last_run_key": "upload_last_run_kif",
+        "editor_key": "upload_editor_kif",
+        "saved_key": "saved_kif_records",
     },
     "kuf": {
-        "title":           "📤 KUF – Knjiga ulaznih faktura",
-        "subtitle":        "Ulazne fakture / KUF.",
-        "uploader_label":  "Odaberi KUF PDF dokumente",
-        "parser":          extract_kuf_from_pdf,
-        "model_cls":       KUFData,
-        "fields":          KUF_FIELDS,
-        "headers":         KUF_HEADERS,
-        "excel_prefix":    "kuf",
-        "sheet_name":      "KUF",
-        "saved_label":     "KUF stavke",
-        "results_key":     "upload_results_kuf",
-        "errors_key":      "upload_errors_kuf",
-        "last_run_key":    "upload_last_run_kuf",
-        "editor_key":      "upload_editor_kuf",
-        "saved_key":       "saved_kuf_records",
+        "title": "📤 KUF – Knjiga ulaznih faktura",
+        "subtitle": "Ulazne fakture / KUF.",
+        "uploader_label": "Odaberi KUF PDF dokumente",
+        "parser": extract_kuf_from_pdf,
+        "model_cls": KUFData,
+        "fields": KUF_FIELDS,
+        "headers": KUF_HEADERS,
+        "excel_prefix": "kuf",
+        "sheet_name": "KUF",
+        "saved_label": "KUF stavke",
+        "results_key": "upload_results_kuf",
+        "errors_key": "upload_errors_kuf",
+        "last_run_key": "upload_last_run_kuf",
+        "editor_key": "upload_editor_kuf",
+        "saved_key": "saved_kuf_records",
     },
     "promet": {
-        "title":           "🧾 Dnevni promet",
-        "subtitle":        "Dnevni izvještaji i fiskalni promet.",
-        "uploader_label":  "Odaberi PDF dokumente dnevnog prometa",
-        "parser":          extract_promet_from_pdf,
-        "model_cls":       DnevniPrometData,
-        "fields":          PROMET_FIELDS,
-        "headers":         PROMET_HEADERS,
-        "excel_prefix":    "dnevni_promet",
-        "sheet_name":      "DNEVNI_PROMET",
-        "saved_label":     "Dnevni promet stavke",
-        "results_key":     "upload_results_promet",
-        "errors_key":      "upload_errors_promet",
-        "last_run_key":    "upload_last_run_promet",
-        "editor_key":      "upload_editor_promet",
-        "saved_key":       "saved_promet_records",
+        "title": "🧾 Dnevni promet",
+        "subtitle": "Dnevni izvještaji i fiskalni promet.",
+        "uploader_label": "Odaberi PDF dokumente dnevnog prometa",
+        "parser": extract_promet_from_pdf,
+        "model_cls": DnevniPrometData,
+        "fields": PROMET_FIELDS,
+        "headers": PROMET_HEADERS,
+        "excel_prefix": "dnevni_promet",
+        "sheet_name": "DNEVNI_PROMET",
+        "saved_label": "Dnevni promet stavke",
+        "results_key": "upload_results_promet",
+        "errors_key": "upload_errors_promet",
+        "last_run_key": "upload_last_run_promet",
+        "editor_key": "upload_editor_promet",
+        "saved_key": "saved_promet_records",
     },
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Glavna render funkcija
-# ─────────────────────────────────────────────────────────────────────────────
+
 def render_upload() -> None:
     _init_state()
     dark_mode = _force_dark_mode()
     _apply_upload_theme(dark_mode)
-    _render_topbar()
     _render_saved_summary()
 
     tab1, tab2, tab3 = st.tabs(["KIF", "KUF", "Dnevni promet"])
@@ -150,9 +141,6 @@ def render_upload() -> None:
         _render_kind_upload("promet")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Inicijalizacija session state
-# ─────────────────────────────────────────────────────────────────────────────
 def _init_state() -> None:
     if _DARK_KEY not in st.session_state:
         st.session_state[_DARK_KEY] = True
@@ -162,6 +150,7 @@ def _init_state() -> None:
         st.session_state["invoices"] = []
     if "last_export" not in st.session_state:
         st.session_state["last_export"] = None
+
     for cfg in _KIND_CONFIG.values():
         for k in ("results_key", "errors_key"):
             if cfg[k] not in st.session_state:
@@ -177,38 +166,6 @@ def _force_dark_mode() -> bool:
     return True
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Top bar + odjava
-# ─────────────────────────────────────────────────────────────────────────────
-def _logout_user() -> None:
-    st.session_state["authenticated"] = False
-    st.session_state["username"] = ""
-    st.session_state["active_page"] = "upload"
-    st.session_state["invoices"] = []
-    st.session_state["last_export"] = None
-    for cfg in _KIND_CONFIG.values():
-        st.session_state[cfg["results_key"]] = []
-        st.session_state[cfg["errors_key"]] = []
-        st.session_state[cfg["last_run_key"]] = None
-        st.session_state[cfg["saved_key"]] = []
-        st.session_state.pop(cfg["editor_key"], None)
-    st.session_state[_SHARED_SAVE_KEY] = {"kif": [], "kuf": [], "promet": []}
-    st.rerun()
-
-
-def _render_topbar() -> None:
-    left, mid, right = st.columns([5, 2, 1])
-    with left:
-        st.markdown("### Učitavanje dokumenata")
-    with mid:
-        username = str(st.session_state.get("username", "") or "").strip()
-        if username:
-            st.caption(f"Prijavljen: {username}")
-    with right:
-        if st.button("Odjava", use_container_width=True):
-            _logout_user()
-
-
 def _render_saved_summary() -> None:
     st.markdown("<div class='section-title'>Sačuvane stavke</div>", unsafe_allow_html=True)
     cols = st.columns(3)
@@ -222,9 +179,6 @@ def _render_saved_summary() -> None:
             )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Upload po vrsti dokumenta
-# ─────────────────────────────────────────────────────────────────────────────
 def _render_kind_upload(kind: str) -> None:
     cfg = _KIND_CONFIG[kind]
 
@@ -263,7 +217,7 @@ def _render_kind_upload(kind: str) -> None:
         _run_extraction(kind, uploaded_files)
 
     results = st.session_state.get(cfg["results_key"], [])
-    errors  = st.session_state.get(cfg["errors_key"], [])
+    errors = st.session_state.get(cfg["errors_key"], [])
     last_run = st.session_state.get(cfg["last_run_key"])
 
     if last_run:
@@ -279,7 +233,7 @@ def _render_kind_upload(kind: str) -> None:
 
     st.markdown("<div class='section-title'>Pregled ekstrahiranih podataka</div>", unsafe_allow_html=True)
     edited_rows = _render_editor(kind, results)
-    prepared    = _rows_to_records(kind, edited_rows, results)
+    prepared = _rows_to_records(kind, edited_rows, results)
 
     st.markdown("<div class='section-title'>Akcije</div>", unsafe_allow_html=True)
     col_save, col_download, col_clear = st.columns(3)
@@ -302,18 +256,15 @@ def _render_kind_upload(kind: str) -> None:
     with col_clear:
         if st.button("Očisti rezultat", use_container_width=True, key=f"clear_{kind}"):
             st.session_state[cfg["results_key"]] = []
-            st.session_state[cfg["errors_key"]]  = []
+            st.session_state[cfg["errors_key"]] = []
             st.session_state[cfg["last_run_key"]] = None
             st.session_state.pop(cfg["editor_key"], None)
             st.rerun()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Ekstrakcija
-# ─────────────────────────────────────────────────────────────────────────────
 def _run_extraction(kind: str, uploaded_files: list) -> None:
-    cfg         = _KIND_CONFIG[kind]
-    parser      = cfg["parser"]
+    cfg = _KIND_CONFIG[kind]
+    parser = cfg["parser"]
     all_results = []
     all_errors: list[str] = []
 
@@ -327,6 +278,10 @@ def _run_extraction(kind: str, uploaded_files: list) -> None:
             if not items:
                 all_errors.append(f"{uploaded.name}: Nema pronađenih stavki.")
                 continue
+
+            if not isinstance(items, list):
+                items = [items]
+
             for record in items:
                 _set_attr(record, "filename", uploaded.name)
                 warnings = _refresh_warnings(kind, record)
@@ -339,8 +294,8 @@ def _run_extraction(kind: str, uploaded_files: list) -> None:
             all_errors.append(f"{uploaded.name}: {exc}")
 
     progress.progress(1.0, text="Ekstrakcija završena.")
-    st.session_state[cfg["results_key"]]  = all_results
-    st.session_state[cfg["errors_key"]]   = all_errors
+    st.session_state[cfg["results_key"]] = all_results
+    st.session_state[cfg["errors_key"]] = all_errors
     st.session_state[cfg["last_run_key"]] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     st.session_state.pop(cfg["editor_key"], None)
 
@@ -350,18 +305,15 @@ def _run_extraction(kind: str, uploaded_files: list) -> None:
         st.warning("Nijedna stavka nije ekstrahovana.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Editor
-# ─────────────────────────────────────────────────────────────────────────────
 def _render_editor(kind: str, records: list[Any]) -> list[dict[str, str]]:
-    cfg     = _KIND_CONFIG[kind]
-    fields  = cfg["fields"]
+    cfg = _KIND_CONFIG[kind]
+    fields = cfg["fields"]
     headers = cfg["headers"]
-    df      = _to_editor_df(kind, records)
+    df = _to_editor_df(kind, records)
 
     column_config: dict[str, Any] = {
-        "Status": st.column_config.TextColumn("Status", width="small",  disabled=True),
-        "Izvor":  st.column_config.TextColumn("Izvor",  width="medium", disabled=True),
+        "Status": st.column_config.TextColumn("Status", width="small", disabled=True),
+        "Izvor": st.column_config.TextColumn("Izvor", width="medium", disabled=True),
     }
     for field in fields:
         label = headers[field]
@@ -384,198 +336,70 @@ def _render_editor(kind: str, records: list[Any]) -> list[dict[str, str]]:
 
 
 def _to_editor_df(kind: str, records: list[Any]) -> pd.DataFrame:
-    cfg     = _KIND_CONFIG[kind]
-    fields  = cfg["fields"]
+    cfg = _KIND_CONFIG[kind]
+    fields = cfg["fields"]
     headers = cfg["headers"]
-    rows    = []
+    rows = []
+
     for record in records:
         row: dict[str, Any] = {
             "Status": "⚠️" if _get_attr(record, "warnings") else "",
-            "Izvor":  _get_attr(record, "filename") or "",
+            "Izvor": _get_attr(record, "filename") or "",
         }
         for field in fields:
             row[headers[field]] = getattr(record, field, "")
         rows.append(row)
+
     return pd.DataFrame(rows)
 
 
 def _rows_to_records(kind: str, rows: list[dict[str, str]], originals: list[Any]) -> list[Any]:
-    cfg       = _KIND_CONFIG[kind]
+    cfg = _KIND_CONFIG[kind]
     model_cls = cfg["model_cls"]
-    fields    = cfg["fields"]
-    prepared  = []
+    fields = cfg["fields"]
+    prepared = []
+
     for idx, row in enumerate(rows):
         payload = {field: row.get(field, "") for field in fields}
-        record  = model_cls(**payload)
+        record = model_cls(**payload)
         if idx < len(originals):
             _set_attr(record, "filename", _get_attr(originals[idx], "filename") or "")
         warnings = _refresh_warnings(kind, record)
         _set_attr(record, "warnings", warnings)
         _set_attr(record, "valid", len(warnings) == 0)
         prepared.append(record)
+
     return prepared
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Validacija po vrsti
-# ─────────────────────────────────────────────────────────────────────────────
 def _refresh_warnings(kind: str, record: Any) -> list[str]:
     w: list[str] = []
+
     if kind == "kif":
-        if not getattr(record, "BROJFAKT",  ""): w.append("BROJFAKT nije pronađen")
-        if not getattr(record, "DATUMF",    ""): w.append("DATUMF nije pronađen")
-        if not getattr(record, "NAZIVPP",   ""): w.append("NAZIVPP nije pronađen")
-        if not getattr(record, "IZNSAPDV",  ""): w.append("IZNSAPDV nije pronađen")
-        _check_amounts(w,
+        if not getattr(record, "BROJFAKT", ""):
+            w.append("BROJFAKT nije pronađen")
+        if not getattr(record, "DATUMF", ""):
+            w.append("DATUMF nije pronađen")
+        if not getattr(record, "NAZIVPP", ""):
+            w.append("NAZIVPP nije pronađen")
+        if not getattr(record, "IZNSAPDV", ""):
+            w.append("IZNSAPDV nije pronađen")
+        _check_amounts(
+            w,
             getattr(record, "IZNBEZPDV", ""),
-            getattr(record, "IZNPDV",    ""),
-            getattr(record, "IZNSAPDV",  ""))
+            getattr(record, "IZNPDV", ""),
+            getattr(record, "IZNSAPDV", ""),
+        )
+
     elif kind == "kuf":
-        if not getattr(record, "BROJ_DOKUMENTA",  ""): w.append("BROJ_DOKUMENTA nije pronađen")
-        if not getattr(record, "DATUM_DOKUMENTA", ""): w.append("DATUM_DOKUMENTA nije pronađen")
-        if not getattr(record, "DOBAVLJAC_NAZIV", ""): w.append("DOBAVLJAC_NAZIV nije pronađen")
-        if not getattr(record, "IZNOS_SA_PDV",    ""): w.append("IZNOS_SA_PDV nije pronađen")
-        _check_amounts(w,
-            getattr(record, "IZNOS_BEZ_PDV", ""),
-            getattr(record, "IZNOS_PDV",     ""),
-            getattr(record, "IZNOS_SA_PDV",  ""))
-    elif kind == "promet":
-        if not getattr(record, "DATUM_PROMETA",           ""): w.append("DATUM_PROMETA nije pronađen")
-        if not getattr(record, "BROJ_DNEVNOG_IZVJESTAJA", ""): w.append("BROJ_DNEVNOG_IZVJESTAJA nije pronađen")
-        if not getattr(record, "UKUPAN_DNEVNI_PROMET",    ""): w.append("UKUPAN_DNEVNI_PROMET nije pronađen")
-    return w
-
-
-def _check_amounts(warnings: list[str], without_vat: str, vat: str, total: str) -> None:
-    a, b, c = _sf(without_vat), _sf(vat), _sf(total)
-    if a is None or b is None or c is None:
-        return
-    if abs((a + b) - c) > 0.06:
-        warnings.append("Iznosi nisu usklađeni")
-
-
-def _sf(value: Any) -> float | None:
-    s = str(value or "").strip()
-    if not s:
-        return None
-    s = s.replace("KM", "").replace("BAM", "").replace(" ", "")
-    if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
-    else:
-        s = s.replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Snimanje / export
-# ─────────────────────────────────────────────────────────────────────────────
-def _save_records(kind: str, records: list[Any]) -> None:
-    cfg = _KIND_CONFIG[kind]
-    st.session_state[cfg["saved_key"]] = records
-    st.session_state[_SHARED_SAVE_KEY][kind] = records
-    if kind == "kif":
-        st.session_state["invoices"] = records
-
-
-def _records_to_excel_bytes(kind: str, records: list[Any]) -> bytes:
-    cfg     = _KIND_CONFIG[kind]
-    fields  = cfg["fields"]
-    headers = cfg["headers"]
-    rows    = []
-    for record in records:
-        row = {headers[f]: getattr(record, f, "") for f in fields}
-        row["Status"] = "⚠️" if _get_attr(record, "warnings") else ""
-        row["Izvor"]  = _get_attr(record, "filename") or ""
-        rows.append(row)
-    ordered = [headers[f] for f in fields] + ["Status", "Izvor"]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=ordered)
-    if rows:
-        df = df[ordered]
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=cfg["sheet_name"])
-        ws = writer.book[cfg["sheet_name"]]
-        ws.freeze_panes = "A2"
-        for col_cells in ws.columns:
-            length = max(len(str(cell.value or "")) for cell in col_cells)
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 12), 38)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def _excel_filename(prefix: str) -> str:
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pomoćne funkcije
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_attr(obj: Any, name: str) -> Any:
-    return getattr(obj, name, None) or getattr(obj, f"_{name}", None)
-
-
-def _set_attr(obj: Any, name: str, value: Any) -> None:
-    try:
-        setattr(obj, name, value)
-    except Exception:
-        try:
-            setattr(obj, f"_{name}", value)
-        except Exception:
-            pass
-
-
-def _render_empty_state(kind: str) -> None:
-    title = _KIND_CONFIG[kind]["title"]
-    st.markdown(
-        f"""<div class='upload-card' style='text-align:center;padding:2rem 1rem;'>
-            <div style='font-size:3rem;margin-bottom:.5rem;'>📄</div>
-            <div style='font-size:1.1rem;font-weight:700;margin-bottom:.4rem;'>{title}</div>
-            <div class='upload-muted'>Uploaduj PDF dokumente da pokreneš ekstrakciju.</div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tema
-# ─────────────────────────────────────────────────────────────────────────────
-def _apply_upload_theme(dark_mode: bool) -> None:
-    if dark_mode:
-        bg, card, border = "#0f172a", "#111827", "#334155"
-        text, muted, input_bg, accent = "#f8fafc", "#cbd5e1", "#0b1220", "#38bdf8"
-    else:
-        bg, card, border = "#f8fafc", "#ffffff", "#dbe4f0"
-        text, muted, input_bg, accent = "#0f172a", "#475569", "#ffffff", "#2563eb"
-
-    st.markdown(f"""<style>
-    .stApp{{background:{bg};color:{text}}}
-    .block-container{{padding-top:1.2rem;padding-bottom:2rem}}
-    h1,h2,h3,h4,h5,h6,p,label,span,div{{color:{text}}}
-    .upload-card{{background:{card};color:{text};border:1px solid {border};
-        border-radius:14px;padding:.9rem 1rem;margin:.25rem 0 .75rem 0}}
-    .upload-muted{{color:{muted};font-size:.9rem}}
-    .section-title{{margin-top:1rem;margin-bottom:.5rem;font-size:1.05rem;font-weight:700}}
-    [data-testid="stFileUploader"]>div{{background:{card};border:1px solid {border};
-        border-radius:16px;padding:.35rem}}
-    [data-testid="stFileUploader"] small,
-    [data-testid="stFileUploader"] label,
-    [data-testid="stFileUploader"] span{{color:{text}!important}}
-    [data-testid="stDataFrame"],[data-testid="stDataEditor"]{{
-        border-radius:16px;overflow:hidden;border:1px solid {border};background:{card}}}
-    [data-testid="stDataFrame"] *,[data-testid="stDataEditor"] *{{color:{text}!important}}
-    div[data-baseweb="select"]>div,div[data-baseweb="input"]>div,
-    .stTextInput>div>div,.stDateInput>div>div,.stNumberInput>div>div{{
-        background:{input_bg}!important;color:{text}!important;border-color:{border}!important}}
-    .stAlert{{border-radius:14px}}
-    [data-testid="stExpander"]{{border:1px solid {border};border-radius:14px;background:{card}}}
-    [data-baseweb="tab-list"]{{gap:.35rem}}
-    [data-baseweb="tab"]{{background:{card};border:1px solid {border};border-radius:12px}}
-    [data-baseweb="tab"]:hover{{border-color:{accent}}}
-    .stDownloadButton button,.stButton button{{border-radius:12px;font-weight:600}}
-    </style>""", unsafe_allow_html=True)
+        if not getattr(record, "BROJ_DOKUMENTA", ""):
+            w.append("BROJ_DOKUMENTA nije pronađen")
+        if not getattr(record, "DATUM_DOKUMENTA", ""):
+            w.append("DATUM_DOKUMENTA nije pronađen")
+        if not getattr(record, "DOBAVLJAC_NAZIV", ""):
+            w.append("DOBAVLJAC_NAZIV nije pronađen")
+        if not getattr(record, "IZNOS_SA_PDV", ""):
+            w.append("IZNOS_SA_PDV nije pronađen")
+        _check_amounts(
+            w,
+            
