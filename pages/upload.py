@@ -15,23 +15,19 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-# ── KIF ───────────────────────────────────────────────────────────────────────
 from ai_extractor import FIELDS as KIF_FIELDS
 from ai_extractor import InvoiceData as KIFData
 from ai_extractor import extract_invoices_from_pdf as extract_kif_from_pdf
-
-# ── KUF ───────────────────────────────────────────────────────────────────────
-from kuf_extractor import KUF_FIELDS, KUFData, extract_kuf_from_pdf
-
-# ── Dnevni promet ─────────────────────────────────────────────────────────────
 from dnevni_promet_extractor import (
-    PROMET_FIELDS,
     DnevniPrometData,
+    PROMET_FIELDS,
     extract_promet_from_pdf,
 )
+from kuf_extractor import KUF_FIELDS, KUFData, extract_kuf_from_pdf
 
 _DARK_KEY = "app_dark_mode"
 _SHARED_SAVE_KEY = "shared_saved_records"
+_SELECTED_KIND_KEY = "selected_upload_kind"
 
 KIF_HEADERS = {
     "BROJFAKT": "Broj fakture",
@@ -75,6 +71,7 @@ _KIND_CONFIG: dict[str, dict[str, Any]] = {
     "kif": {
         "title": "📥 KIF – Knjiga izlaznih faktura",
         "subtitle": "Izlazne fakture / KIF.",
+        "short": "KIF",
         "uploader_label": "Odaberi KIF PDF dokumente",
         "parser": extract_kif_from_pdf,
         "model_cls": KIFData,
@@ -92,6 +89,7 @@ _KIND_CONFIG: dict[str, dict[str, Any]] = {
     "kuf": {
         "title": "📤 KUF – Knjiga ulaznih faktura",
         "subtitle": "Ulazne fakture / KUF.",
+        "short": "KUF",
         "uploader_label": "Odaberi KUF PDF dokumente",
         "parser": extract_kuf_from_pdf,
         "model_cls": KUFData,
@@ -109,6 +107,7 @@ _KIND_CONFIG: dict[str, dict[str, Any]] = {
     "promet": {
         "title": "🧾 Dnevni promet",
         "subtitle": "Dnevni izvještaji i fiskalni promet.",
+        "short": "Dnevni promet",
         "uploader_label": "Odaberi PDF dokumente dnevnog prometa",
         "parser": extract_promet_from_pdf,
         "model_cls": DnevniPrometData,
@@ -130,15 +129,9 @@ def render_upload() -> None:
     _init_state()
     dark_mode = _force_dark_mode()
     _apply_upload_theme(dark_mode)
-    _render_saved_summary()
+    _render_kind_selector()
+    _render_kind_upload(st.session_state[_SELECTED_KIND_KEY])
 
-    tab1, tab2, tab3 = st.tabs(["KIF", "KUF", "Dnevni promet"])
-    with tab1:
-        _render_kind_upload("kif")
-    with tab2:
-        _render_kind_upload("kuf")
-    with tab3:
-        _render_kind_upload("promet")
 
 
 def _init_state() -> None:
@@ -146,6 +139,8 @@ def _init_state() -> None:
         st.session_state[_DARK_KEY] = True
     if _SHARED_SAVE_KEY not in st.session_state:
         st.session_state[_SHARED_SAVE_KEY] = {"kif": [], "kuf": [], "promet": []}
+    if _SELECTED_KIND_KEY not in st.session_state:
+        st.session_state[_SELECTED_KIND_KEY] = "kif"
     if "invoices" not in st.session_state:
         st.session_state["invoices"] = []
     if "last_export" not in st.session_state:
@@ -161,22 +156,27 @@ def _init_state() -> None:
             st.session_state[cfg["saved_key"]] = []
 
 
+
 def _force_dark_mode() -> bool:
     st.session_state[_DARK_KEY] = True
     return True
 
 
-def _render_saved_summary() -> None:
-    st.markdown("<div class='section-title'>Sačuvane stavke</div>", unsafe_allow_html=True)
+
+def _render_kind_selector() -> None:
+    st.markdown("<div class='section-title'>Odaberi tip dokumenta</div>", unsafe_allow_html=True)
     cols = st.columns(3)
-    for col, kind in zip(cols, ["kif", "kuf", "promet"]):
+    order = ["kif", "kuf", "promet"]
+
+    for col, kind in zip(cols, order):
         cfg = _KIND_CONFIG[kind]
-        count = len(st.session_state.get(cfg["saved_key"], []))
+        active = st.session_state.get(_SELECTED_KIND_KEY) == kind
+        label = f"{'● ' if active else ''}{cfg['short']}"
         with col:
-            st.markdown(
-                f"<div class='upload-card'><b>{cfg['saved_label']}:</b> {count}</div>",
-                unsafe_allow_html=True,
-            )
+            if st.button(label, key=f"select_{kind}", use_container_width=True, type="primary" if active else "secondary"):
+                st.session_state[_SELECTED_KIND_KEY] = kind
+                st.rerun()
+
 
 
 def _render_kind_upload(kind: str) -> None:
@@ -262,6 +262,7 @@ def _render_kind_upload(kind: str) -> None:
             st.rerun()
 
 
+
 def _run_extraction(kind: str, uploaded_files: list) -> None:
     cfg = _KIND_CONFIG[kind]
     parser = cfg["parser"]
@@ -305,6 +306,7 @@ def _run_extraction(kind: str, uploaded_files: list) -> None:
         st.warning("Nijedna stavka nije ekstrahovana.")
 
 
+
 def _render_editor(kind: str, records: list[Any]) -> list[dict[str, str]]:
     cfg = _KIND_CONFIG[kind]
     fields = cfg["fields"]
@@ -335,6 +337,7 @@ def _render_editor(kind: str, records: list[Any]) -> list[dict[str, str]]:
     ]
 
 
+
 def _to_editor_df(kind: str, records: list[Any]) -> pd.DataFrame:
     cfg = _KIND_CONFIG[kind]
     fields = cfg["fields"]
@@ -351,6 +354,7 @@ def _to_editor_df(kind: str, records: list[Any]) -> pd.DataFrame:
         rows.append(row)
 
     return pd.DataFrame(rows)
+
 
 
 def _rows_to_records(kind: str, rows: list[dict[str, str]], originals: list[Any]) -> list[Any]:
@@ -370,6 +374,7 @@ def _rows_to_records(kind: str, rows: list[dict[str, str]], originals: list[Any]
         prepared.append(record)
 
     return prepared
+
 
 
 def _refresh_warnings(kind: str, record: Any) -> list[str]:
@@ -418,19 +423,27 @@ def _refresh_warnings(kind: str, record: Any) -> list[str]:
     return w
 
 
-def _check_amounts(warnings: list[str], without_vat: str, vat: str, total: str) -> None:
-    a, b, c = _sf(without_vat), _sf(vat), _sf(total)
+
+def _check_amounts(warnings: list[str], bez_pdv: Any, pdv: Any, sa_pdv: Any) -> None:
+    a = _safe_float(bez_pdv)
+    b = _safe_float(pdv)
+    c = _safe_float(sa_pdv)
+
     if a is None or b is None or c is None:
         return
+
     if abs((a + b) - c) > 0.06:
         warnings.append("Iznosi nisu usklađeni")
 
 
-def _sf(value: Any) -> float | None:
+
+def _safe_float(value: Any) -> float | None:
     s = str(value or "").strip()
     if not s:
         return None
+
     s = s.replace("KM", "").replace("BAM", "").replace(" ", "")
+
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
@@ -438,114 +451,191 @@ def _sf(value: Any) -> float | None:
             s = s.replace(",", "")
     else:
         s = s.replace(",", ".")
+
     try:
         return float(s)
     except Exception:
         return None
 
 
+
 def _save_records(kind: str, records: list[Any]) -> None:
     cfg = _KIND_CONFIG[kind]
     st.session_state[cfg["saved_key"]] = records
     st.session_state[_SHARED_SAVE_KEY][kind] = records
+
     if kind == "kif":
         st.session_state["invoices"] = records
+
+    st.session_state["last_export"] = {
+        "kind": kind,
+        "count": len(records),
+        "timestamp": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+    }
+
 
 
 def _records_to_excel_bytes(kind: str, records: list[Any]) -> bytes:
     cfg = _KIND_CONFIG[kind]
     fields = cfg["fields"]
     headers = cfg["headers"]
-    rows = []
 
+    rows = []
     for record in records:
-        row = {headers[f]: getattr(record, f, "") for f in fields}
+        row = {headers[field]: getattr(record, field, "") for field in fields}
         row["Status"] = "⚠️" if _get_attr(record, "warnings") else ""
         row["Izvor"] = _get_attr(record, "filename") or ""
         rows.append(row)
 
-    ordered = [headers[f] for f in fields] + ["Status", "Izvor"]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=ordered)
-    if rows:
-        df = df[ordered]
+    ordered_cols = [headers[field] for field in fields] + ["Status", "Izvor"]
+    df = pd.DataFrame(rows, columns=ordered_cols)
 
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name=cfg["sheet_name"])
-        ws = writer.book[cfg["sheet_name"]]
-        ws.freeze_panes = "A2"
-        for col_cells in ws.columns:
-            length = max(len(str(cell.value or "")) for cell in col_cells)
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 12), 38)
+        worksheet = writer.book[cfg["sheet_name"]]
+        worksheet.freeze_panes = "A2"
 
-    buf.seek(0)
-    return buf.getvalue()
+        for col in worksheet.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            worksheet.column_dimensions[col[0].column_letter].width = min(max(max_len + 2, 12), 40)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 
 def _excel_filename(prefix: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
 
-def _get_attr(obj: Any, name: str) -> Any:
-    return getattr(obj, name, None) or getattr(obj, f"_{name}", None)
+
+def _get_attr(record: Any, name: str, default: Any = None) -> Any:
+    if hasattr(record, name):
+        return getattr(record, name)
+    private_name = f"_{name}"
+    if hasattr(record, private_name):
+        return getattr(record, private_name)
+    return default
 
 
-def _set_attr(obj: Any, name: str, value: Any) -> None:
+
+def _set_attr(record: Any, name: str, value: Any) -> None:
     try:
-        setattr(obj, name, value)
+        setattr(record, name, value)
+        return
     except Exception:
-        try:
-            setattr(obj, f"_{name}", value)
-        except Exception:
-            pass
+        pass
+
+    private_name = f"_{name}"
+    try:
+        setattr(record, private_name, value)
+        return
+    except Exception:
+        pass
+
+    try:
+        object.__setattr__(record, name, value)
+    except Exception:
+        pass
+
 
 
 def _render_empty_state(kind: str) -> None:
     title = _KIND_CONFIG[kind]["title"]
     st.markdown(
-        f"""<div class='upload-card' style='text-align:center;padding:2rem 1rem;'>
-            <div style='font-size:3rem;margin-bottom:.5rem;'>📄</div>
-            <div style='font-size:1.1rem;font-weight:700;margin-bottom:.4rem;'>{title}</div>
-            <div class='upload-muted'>Uploaduj PDF dokumente da pokreneš ekstrakciju.</div>
-        </div>""",
+        f"""
+        <div class="upload-card" style="text-align:center; padding:2rem 1rem;">
+            <div style="font-size:3rem; margin-bottom:0.5rem;">📄</div>
+            <div style="font-size:1.15rem; font-weight:700; margin-bottom:0.4rem;">{title}</div>
+            <div class="upload-muted">Uploaduj PDF dokumente da pokreneš ekstrakciju za ovu sekciju.</div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
 
+
 def _apply_upload_theme(dark_mode: bool) -> None:
     if dark_mode:
-        bg, card, border = "#0f172a", "#111827", "#334155"
-        text, muted, input_bg, accent = "#f8fafc", "#cbd5e1", "#0b1220", "#38bdf8"
+        bg = "#0f172a"
+        card = "#111827"
+        border = "#334155"
+        text = "#f8fafc"
+        muted = "#cbd5e1"
+        input_bg = "#0b1220"
+        accent = "#38bdf8"
     else:
-        bg, card, border = "#f8fafc", "#ffffff", "#dbe4f0"
-        text, muted, input_bg, accent = "#0f172a", "#475569", "#ffffff", "#2563eb"
+        bg = "#f8fafc"
+        card = "#ffffff"
+        border = "#dbe4f0"
+        text = "#0f172a"
+        muted = "#475569"
+        input_bg = "#ffffff"
+        accent = "#2563eb"
 
     st.markdown(
-        f"""<style>
-        .stApp{{background:{bg};color:{text}}}
-        .block-container{{padding-top:1.2rem;padding-bottom:2rem}}
-        h1,h2,h3,h4,h5,h6,p,label,span,div{{color:{text}}}
-        .upload-card{{background:{card};color:{text};border:1px solid {border};
-            border-radius:14px;padding:.9rem 1rem;margin:.25rem 0 .75rem 0}}
-        .upload-muted{{color:{muted};font-size:.9rem}}
-        .section-title{{margin-top:1rem;margin-bottom:.5rem;font-size:1.05rem;font-weight:700}}
-        [data-testid="stFileUploader"]>div{{background:{card};border:1px solid {border};
-            border-radius:16px;padding:.35rem}}
+        f"""
+        <style>
+        .stApp {{ background: {bg}; color: {text}; }}
+        .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; }}
+        h1, h2, h3, h4, h5, h6, p, label, span, div {{ color: {text}; }}
+        .upload-card {{
+            background: {card};
+            color: {text};
+            border: 1px solid {border};
+            border-radius: 14px;
+            padding: 0.9rem 1rem;
+            margin: 0.25rem 0 0.75rem 0;
+        }}
+        .upload-muted {{ color: {muted}; font-size: 0.9rem; }}
+        .section-title {{
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            font-size: 1.05rem;
+            font-weight: 700;
+        }}
+        [data-testid="stFileUploader"] > div {{
+            background: {card};
+            border: 1px solid {border};
+            border-radius: 16px;
+            padding: 0.35rem;
+        }}
         [data-testid="stFileUploader"] small,
         [data-testid="stFileUploader"] label,
-        [data-testid="stFileUploader"] span{{color:{text}!important}}
-        [data-testid="stDataFrame"],[data-testid="stDataEditor"]{{
-            border-radius:16px;overflow:hidden;border:1px solid {border};background:{card}}}
-        [data-testid="stDataFrame"] *,[data-testid="stDataEditor"] *{{color:{text}!important}}
-        div[data-baseweb="select"]>div,div[data-baseweb="input"]>div,
-        .stTextInput>div>div,.stDateInput>div>div,.stNumberInput>div>div{{
-            background:{input_bg}!important;color:{text}!important;border-color:{border}!important}}
-        .stAlert{{border-radius:14px}}
-        [data-testid="stExpander"]{{border:1px solid {border};border-radius:14px;background:{card}}}
-        [data-baseweb="tab-list"]{{gap:.35rem}}
-        [data-baseweb="tab"]{{background:{card};border:1px solid {border};border-radius:12px}}
-        [data-baseweb="tab"]:hover{{border-color:{accent}}}
-        .stDownloadButton button,.stButton button{{border-radius:12px;font-weight:600}}
-        </style>""",
+        [data-testid="stFileUploader"] span {{
+            color: {text} !important;
+        }}
+        [data-testid="stDataFrame"], [data-testid="stDataEditor"] {{
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid {border};
+            background: {card};
+        }}
+        [data-testid="stDataFrame"] *, [data-testid="stDataEditor"] * {{
+            color: {text} !important;
+        }}
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] > div,
+        .stTextInput > div > div,
+        .stDateInput > div > div,
+        .stNumberInput > div > div {{
+            background: {input_bg} !important;
+            color: {text} !important;
+            border-color: {border} !important;
+        }}
+        .stAlert {{ border-radius: 14px; }}
+        [data-testid="stExpander"] {{
+            border: 1px solid {border};
+            border-radius: 14px;
+            background: {card};
+        }}
+        .stDownloadButton button, .stButton button {{
+            border-radius: 12px;
+            font-weight: 700;
+            min-height: 54px;
+        }}
+        </style>
+        """,
         unsafe_allow_html=True,
     )
