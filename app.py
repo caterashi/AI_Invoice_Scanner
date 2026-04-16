@@ -165,7 +165,6 @@ def main() -> None:
         _render_login()
         return
 
-    active = render_sidebar()
     render_fn = PAGE_MAP.get(active, render_upload)
     render_fn()
 
