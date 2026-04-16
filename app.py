@@ -108,7 +108,12 @@ def _render_topbar() -> None:
     with right:
         st.markdown("")
         st.markdown("")
-        st.button("Odjava", use_container_width=True, on_click=_logout)
+        st.button(
+            "Odjava",
+            key="logout_main",
+            use_container_width=True,
+            on_click=_logout,
+        )
 
 
 def main() -> None:
