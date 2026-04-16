@@ -1,7 +1,3 @@
-"""app.py
-FakturaAI - glavna Streamlit aplikacija.
-"""
-
 from __future__ import annotations
 
 import os
@@ -10,11 +6,15 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
+from login import render_login
+from pages.dashboard import render_dashboard
+from pages.upload import render_upload
+
 st.set_page_config(
     page_title="FakturaAI",
     page_icon="🧾",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -34,125 +34,56 @@ for key, value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-from pages.dashboard import render_dashboard  # noqa: E402
-from pages.upload import render_upload  # noqa: E402
 
-PAGE_MAP = {
-    "upload": render_upload,
-    "pregled": render_dashboard,
-}
-
-
-def _expected_username() -> str:
-    if hasattr(st, "secrets") and "APP_USERNAME" in st.secrets:
-        return str(st.secrets["APP_USERNAME"])
-    return str(os.getenv("APP_USERNAME", "")).strip()
-
-
-def _expected_password() -> str:
-    if hasattr(st, "secrets") and "APP_PASSWORD" in st.secrets:
-        return str(st.secrets["APP_PASSWORD"])
-    return str(os.getenv("APP_PASSWORD", "")).strip()
-
-
-def _check_login(username: str, password: str) -> tuple[bool, str]:
-    expected_user = _expected_username()
-    expected_password = _expected_password()
-
-    if expected_user and expected_password:
-        ok = username == expected_user and password == expected_password
-        return ok, "Pogrešno korisničko ime ili lozinka."
-
-    ok = bool(username.strip()) and bool(password.strip())
-    return ok, "Unesi korisničko ime i lozinku."
-
-
-def _render_login() -> None:
-    _apply_login_theme()
-
-    left, center, right = st.columns([1.2, 1, 1.2])
-    with center:
-        st.markdown(
-            """
-            <div class="login-card">
-                <div class="login-title">FakturaAI</div>
-                <div class="login-subtitle">Prijavi se za pristup KIF, KUF i dnevnom prometu.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Korisničko ime", placeholder="Unesi korisničko ime")
-            password = st.text_input("Lozinka", type="password", placeholder="Unesi lozinku")
-            submitted = st.form_submit_button("Prijava", use_container_width=True, type="primary")
-
-        if submitted:
-            ok, error_message = _check_login(username, password)
-            if ok:
-                st.session_state["authenticated"] = True
-                st.session_state["username"] = username.strip()
-                st.session_state["active_page"] = "upload"
-                st.rerun()
-            else:
-                st.error(error_message)
-
-        if not (_expected_username() and _expected_password()):
-            st.info("APP_USERNAME i APP_PASSWORD nisu postavljeni, pa je uključen fallback login sa bilo kojim ne-praznim unosom.")
-
-
-def _apply_login_theme() -> None:
+def _apply_theme() -> None:
     st.markdown(
         """
         <style>
-        .stApp {
-            background: linear-gradient(135deg, #0f172a 0%, #111827 50%, #0b1220 100%);
-            color: #f8fafc;
+        section[data-testid="stSidebar"] {
+            display: none !important;
         }
+
         .block-container {
-            padding-top: 8vh;
-            padding-bottom: 4vh;
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
         }
-        .login-card {
-            background: rgba(17, 24, 39, 0.92);
+
+        .app-topbar {
+            background: #111827;
             border: 1px solid #334155;
-            border-radius: 20px;
-            padding: 1.4rem 1.2rem 1rem 1.2rem;
+            border-radius: 16px;
+            padding: 1rem 1.1rem;
             margin-bottom: 1rem;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.25);
-            text-align: center;
         }
-        .login-title {
-            font-size: 2rem;
+
+        .app-title {
+            font-size: 1.6rem;
             font-weight: 800;
             color: #f8fafc;
-            margin-bottom: 0.35rem;
+            margin: 0;
         }
-        .login-subtitle {
+
+        .app-subtitle {
             color: #cbd5e1;
-            font-size: 0.98rem;
+            font-size: 0.95rem;
+            margin-top: 0.2rem;
         }
-        div[data-baseweb="input"] > div,
-        .stTextInput > div > div {
-            background: #0b1220 !important;
-            color: #f8fafc !important;
-            border-color: #334155 !important;
+
+        .nav-wrap {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 0.35rem 1rem 0.2rem 1rem;
+            margin-bottom: 1rem;
         }
-        .stTextInput label,
-        .stMarkdown,
-        .stAlert,
-        p,
-        span,
-        div {
-            color: #f8fafc;
+
+        div[data-baseweb="radio"] > div {
+            gap: 1rem;
         }
-        .stButton > button,
-        .stForm button {
+
+        .stButton > button {
             border-radius: 12px;
             font-weight: 700;
-        }
-        section[data-testid="stSidebar"] {
-            display: none;
         }
         </style>
         """,
@@ -160,13 +91,79 @@ def _apply_login_theme() -> None:
     )
 
 
+def _logout() -> None:
+    st.session_state["authenticated"] = False
+    st.session_state["username"] = ""
+    st.session_state["active_page"] = "upload"
+    st.rerun()
+
+
+def _render_topbar() -> None:
+    left, mid, right = st.columns([5, 2, 1])
+
+    with left:
+        st.markdown(
+            """
+            <div class="app-topbar">
+                <div class="app-title">FakturaAI</div>
+                <div class="app-subtitle">Upload, ekstrakcija i pregled KIF / KUF / dnevnog prometa.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with mid:
+        username = str(st.session_state.get("username", "") or "").strip()
+        if username:
+            st.markdown("")
+            st.caption(f"Prijavljen: {username}")
+
+    with right:
+        st.markdown("")
+        st.markdown("")
+        st.button("Odjava", use_container_width=True, on_click=_logout)
+
+
+def _render_navigation() -> str:
+    current = st.session_state.get("active_page", "upload")
+
+    options = {
+        "Upload": "upload",
+        "Pregled": "pregled",
+    }
+
+    labels = list(options.keys())
+    current_label = next((label for label, value in options.items() if value == current), "Upload")
+
+    st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
+    selected_label = st.radio(
+        "Navigacija",
+        labels,
+        index=labels.index(current_label),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    selected_page = options[selected_label]
+    st.session_state["active_page"] = selected_page
+    return selected_page
+
+
 def main() -> None:
+    _apply_theme()
+
     if not st.session_state.get("authenticated", False):
-        _render_login()
+        render_login()
         return
 
-    render_fn = PAGE_MAP.get(active, render_upload)
-    render_fn()
+    _render_topbar()
+    active_page = _render_navigation()
+
+    if active_page == "pregled":
+        render_dashboard()
+    else:
+        render_upload()
 
 
 if __name__ == "__main__":
