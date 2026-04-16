@@ -34,7 +34,6 @@ for key, value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-from sidebar import render_sidebar  # noqa: E402
 from pages.dashboard import render_dashboard  # noqa: E402
 from pages.upload import render_upload  # noqa: E402
 
