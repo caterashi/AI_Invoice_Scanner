@@ -7,7 +7,6 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from login import render_login
-from pages.dashboard import render_dashboard
 from pages.upload import render_upload
 
 st.set_page_config(
@@ -69,18 +68,6 @@ def _apply_theme() -> None:
             margin-top: 0.2rem;
         }
 
-        .nav-wrap {
-            background: #111827;
-            border: 1px solid #334155;
-            border-radius: 16px;
-            padding: 0.35rem 1rem 0.2rem 1rem;
-            margin-bottom: 1rem;
-        }
-
-        div[data-baseweb="radio"] > div {
-            gap: 1rem;
-        }
-
         .stButton > button {
             border-radius: 12px;
             font-weight: 700;
@@ -106,7 +93,7 @@ def _render_topbar() -> None:
             """
             <div class="app-topbar">
                 <div class="app-title">FakturaAI</div>
-                <div class="app-subtitle">Upload, ekstrakcija i pregled KIF / KUF / dnevnog prometa.</div>
+                <div class="app-subtitle">Upload i ekstrakcija KIF / KUF / dnevnog prometa.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -124,32 +111,6 @@ def _render_topbar() -> None:
         st.button("Odjava", use_container_width=True, on_click=_logout)
 
 
-def _render_navigation() -> str:
-    current = st.session_state.get("active_page", "upload")
-
-    options = {
-        "Upload": "upload",
-        "Pregled": "pregled",
-    }
-
-    labels = list(options.keys())
-    current_label = next((label for label, value in options.items() if value == current), "Upload")
-
-    st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
-    selected_label = st.radio(
-        "Navigacija",
-        labels,
-        index=labels.index(current_label),
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    selected_page = options[selected_label]
-    st.session_state["active_page"] = selected_page
-    return selected_page
-
-
 def main() -> None:
     _apply_theme()
 
@@ -157,13 +118,9 @@ def main() -> None:
         render_login()
         return
 
+    st.session_state["active_page"] = "upload"
     _render_topbar()
-    active_page = _render_navigation()
-
-    if active_page == "pregled":
-        render_dashboard()
-    else:
-        render_upload()
+    render_upload()
 
 
 if __name__ == "__main__":
