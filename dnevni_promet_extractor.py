@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import base64
@@ -36,6 +35,8 @@ FIELDS = [
     "POSLOVNA_JEDINICA",
     "FISKALNI_UREDJAJ",
 ]
+
+PROMET_FIELDS = FIELDS
 
 _MIN_TEXT_CHARS = 100
 _DPI = 200
@@ -116,7 +117,14 @@ class DnevniPrometData(BaseModel):
         except Exception:
             return str(v or "").strip()
 
-    @field_validator("BROJ_DNEVNOG_IZVJESTAJA", "POSLJEDNJI_BF", "POSLJEDNJI_RF", "BROJ_IZDATIH_FAKTURA", "POSLOVNA_JEDINICA", "FISKALNI_UREDJAJ")
+    @field_validator(
+        "BROJ_DNEVNOG_IZVJESTAJA",
+        "POSLJEDNJI_BF",
+        "POSLJEDNJI_RF",
+        "BROJ_IZDATIH_FAKTURA",
+        "POSLOVNA_JEDINICA",
+        "FISKALNI_UREDJAJ",
+    )
     @classmethod
     def clean_text(cls, v: str) -> str:
         return re.sub(r"\s+", " ", str(v or "")).strip()
@@ -180,22 +188,26 @@ def _get_client() -> OpenAI:
 
 def _extract_text_pages(pdf_bytes: bytes) -> list[str]:
     pages_a, pages_b = [], []
+
     if fitz is not None:
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             pages_a = [(page.get_text("text") or "").strip() for page in doc]
         except Exception:
             pages_a = []
+
     if pdfplumber is not None:
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                 pages_b = [(page.extract_text() or "").strip() for page in pdf.pages]
         except Exception:
             pages_b = []
+
     score_a = sum(len(re.sub(r"\s+", "", x)) for x in pages_a)
     score_b = sum(len(re.sub(r"\s+", "", x)) for x in pages_b)
     pages = pages_a if score_a >= score_b else pages_b
-    return [re.sub(r"\s+", " ", p).strip() for p in pages]
+
+    return [re.sub(r"\s+", " ", p).strip() for p in pages if p.strip()]
 
 
 def _is_text_pdf(text: str) -> bool:
@@ -204,26 +216,31 @@ def _is_text_pdf(text: str) -> bool:
 
 def _pdf_to_b64_images(pdf_bytes: bytes) -> list[str]:
     pages = convert_from_bytes(pdf_bytes, dpi=_DPI, fmt="jpeg")
-    out = []
+    out: list[str] = []
+
     for img in pages:
         img = img.convert("RGB")
         w, h = img.size
         ratio = min(_MAX_IMG_WIDTH / max(w, 1), _MAX_IMG_HEIGHT / max(h, 1), 1.0)
         if ratio < 1.0:
             img = img.resize((int(w * ratio), int(h * ratio)))
+
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
         out.append(base64.b64encode(buf.getvalue()).decode())
+
     return out
 
 
 def _parse_response(raw: str, filename: str) -> list[DnevniPrometData]:
     if not raw:
         return [_error_record(filename, "Prazan odgovor modela")]
+
     raw = raw.strip()
     m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
     if m:
         raw = m.group(1).strip()
+
     try:
         data = json.loads(raw)
     except Exception:
@@ -234,21 +251,26 @@ def _parse_response(raw: str, filename: str) -> list[DnevniPrometData]:
             data = json.loads(m2.group(1))
         except Exception:
             return [_error_record(filename, f"JSON parse greška: {raw[:300]}")]
+
     if isinstance(data, dict):
         data = [data]
+
     if not isinstance(data, list) or not data:
         return [_error_record(filename, "Model nije vratio validan JSON array")]
 
-    items = []
+    items: list[DnevniPrometData] = []
+
     for item in data:
         if not isinstance(item, dict):
             continue
+
         payload = {field: str(item.get(field, "") or "").strip() for field in FIELDS}
         rec = DnevniPrometData(**payload)
         rec.filename = filename
         rec.warnings = _validate(rec)
         rec.valid = len(rec.warnings) == 0
         items.append(rec)
+
     return items or [_error_record(filename, "Nema rezultata")]
 
 
@@ -263,14 +285,27 @@ def _extract_via_text(text: str, filename: str) -> list[DnevniPrometData]:
             {"role": "user", "content": f"Fajl: {filename}\n\nTEKST DOKUMENTA:\n{text}"},
         ],
     )
-    return _parse_response(resp.choices[0].message.content.strip(), filename)
+    content = (resp.choices[0].message.content or "").strip()
+    return _parse_response(content, filename)
 
 
 def _extract_via_vision(images: list[str], filename: str) -> list[DnevniPrometData]:
     client = _get_client()
-    content = [{"type": "text", "text": f"Fajl: {filename}. Vrati podatke dnevnog prometa kao JSON array."}]
+    content = [
+        {
+            "type": "text",
+            "text": f"Fajl: {filename}. Vrati podatke dnevnog prometa kao JSON array.",
+        }
+    ]
+
     for img in images[:8]:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img}"},
+            }
+        )
+
     resp = client.chat.completions.create(
         model=_active_model(),
         temperature=0,
@@ -280,17 +315,20 @@ def _extract_via_vision(images: list[str], filename: str) -> list[DnevniPrometDa
             {"role": "user", "content": content},
         ],
     )
-    return _parse_response(resp.choices[0].message.content.strip(), filename)
+    content_text = (resp.choices[0].message.content or "").strip()
+    return _parse_response(content_text, filename)
 
 
 def _validate(rec: DnevniPrometData) -> list[str]:
-    warnings = []
+    warnings: list[str] = []
+
     if not rec.DATUM_PROMETA:
         warnings.append("DATUM_PROMETA nije pronađen")
     if not rec.BROJ_DNEVNOG_IZVJESTAJA:
         warnings.append("BROJ_DNEVNOG_IZVJESTAJA nije pronađen")
     if not rec.UKUPAN_DNEVNI_PROMET:
         warnings.append("UKUPAN_DNEVNI_PROMET nije pronađen")
+
     return warnings
 
 
@@ -305,12 +343,16 @@ def _error_record(filename: str, msg: str) -> DnevniPrometData:
 def extract_invoices_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[DnevniPrometData]:
     text_pages = _extract_text_pages(pdf_bytes)
     full_text = "\n".join(text_pages).strip()
+
     if _is_text_pdf(full_text):
         return _extract_via_text(full_text, filename)
+
     return _extract_via_vision(_pdf_to_b64_images(pdf_bytes), filename)
+
+
+def extract_promet_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[DnevniPrometData]:
+    return extract_invoices_from_pdf(pdf_bytes, filename)
 
 
 def extract_dnevni_promet_from_pdf(pdf_bytes: bytes, filename: str = "") -> list[DnevniPrometData]:
     return extract_invoices_from_pdf(pdf_bytes, filename)
-# Alias za upload.py
-PROMET_FIELDS = FIELDS
